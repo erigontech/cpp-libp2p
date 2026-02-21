@@ -44,7 +44,7 @@ namespace libp2p::protocol::gossip {
                          std::shared_ptr<crypto::marshaller::KeyMarshaller> key_marshaller)
       : config_(std::move(config)),
         create_message_id_([](const Bytes &from, const Bytes &seq,
-                              const Bytes &data){
+                              const Bytes &data, const TopicId &){
           return createMessageId(from, seq, data);
         }),
         scheduler_(std::move(scheduler)),
@@ -175,7 +175,7 @@ namespace libp2p::protocol::gossip {
       }
     }
 
-    MessageId msg_id = create_message_id_(msg->from, msg->seq_no, msg->data);
+    MessageId msg_id = create_message_id_(msg->from, msg->seq_no, msg->data, msg->topic);
 
     [[maybe_unused]] bool inserted = msg_cache_.insert(msg, msg_id);
     assert(inserted);
@@ -276,7 +276,7 @@ namespace libp2p::protocol::gossip {
       return;
     }
 
-    MessageId msg_id = create_message_id_(msg->from, msg->seq_no, msg->data);
+    MessageId msg_id = create_message_id_(msg->from, msg->seq_no, msg->data, msg->topic);
     log_.debug("message arrived, msg id={:x}", msg_id);
 
     if (msg_cache_.contains(msg_id)) {

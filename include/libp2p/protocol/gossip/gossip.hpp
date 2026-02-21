@@ -133,7 +133,8 @@ namespace libp2p::protocol::gossip {
 
     /// Creates unique message ID out of message fields
     using MessageIdFn = std::function<Bytes(
-        const Bytes &from, const Bytes &seq, const Bytes &data)>;
+        const Bytes &from, const Bytes &seq, const Bytes &data,
+        const TopicId &topic)>;
 
     /// Sets message ID funtion that differs from default (from+sec_no)
     virtual void setMessageIdFn(MessageIdFn fn) = 0;

@@ -14,9 +14,9 @@ function(addtest test_name)
       COMMAND $<TARGET_FILE:${test_name}>
   )
   set_target_properties(${test_name} PROPERTIES
-      RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/test_bin
-      ARCHIVE_OUTPUT_PATH ${CMAKE_BINARY_DIR}/test_lib
-      LIBRARY_OUTPUT_PATH ${CMAKE_BINARY_DIR}/test_lib
+      RUNTIME_OUTPUT_DIRECTORY ${PROJECT_BINARY_DIR}/test_bin
+      ARCHIVE_OUTPUT_PATH ${PROJECT_BINARY_DIR}/test_lib
+      LIBRARY_OUTPUT_PATH ${PROJECT_BINARY_DIR}/test_lib
       )
   disable_clang_tidy(${test_name})
   set_property(GLOBAL APPEND PROPERTY TEST_TARGETS ${test_name})
@@ -64,10 +64,10 @@ function(compile_proto_to_cpp PROTO_LIBRARY_NAME PB_H PB_CC PROTO)
   endif ()
 
   get_filename_component(PROTO_ABS "${PROTO}" ABSOLUTE)
-  # get relative (to CMAKE_BINARY_DIR) path of current proto file
-  file(RELATIVE_PATH SCHEMA_REL "${CMAKE_BINARY_DIR}/src" "${CMAKE_CURRENT_BINARY_DIR}")
+  # get relative (to PROJECT_BINARY_DIR) path of current proto file
+  file(RELATIVE_PATH SCHEMA_REL "${PROJECT_BINARY_DIR}/src" "${CMAKE_CURRENT_BINARY_DIR}")
 
-  set(SCHEMA_OUT_DIR ${CMAKE_BINARY_DIR}/pb/${PROTO_LIBRARY_NAME}/generated)
+  set(SCHEMA_OUT_DIR ${PROJECT_BINARY_DIR}/pb/${PROTO_LIBRARY_NAME}/generated)
   file(MAKE_DIRECTORY ${SCHEMA_OUT_DIR})
 
   string(REGEX REPLACE "\\.proto$" ".pb.h" GEN_PB_HEADER ${PROTO})
@@ -85,7 +85,7 @@ function(compile_proto_to_cpp PROTO_LIBRARY_NAME PB_H PB_CC PROTO)
       OUTPUT ${OUT_HPP} ${OUT_CPP}
       COMMAND ${GEN_COMMAND}
       ARGS -I${PROJECT_SOURCE_DIR}/src -I${GEN_ARGS} --cpp_out=${SCHEMA_OUT_DIR} ${PROTO_ABS}
-      WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
+      WORKING_DIRECTORY ${PROJECT_BINARY_DIR}
       DEPENDS ${PROTOBUF_DEPENDS} ${PROTO_ABS}
       VERBATIM
   )
@@ -113,9 +113,9 @@ function(add_proto_library NAME)
       )
   target_include_directories(${NAME} PUBLIC
       # required for common targets
-      $<BUILD_INTERFACE:${CMAKE_BINARY_DIR}/pb/${NAME}>
+      $<BUILD_INTERFACE:${PROJECT_BINARY_DIR}/pb/${NAME}>
       # required for compiling proto targets
-      $<BUILD_INTERFACE:${CMAKE_BINARY_DIR}/pb/${NAME}/generated>
+      $<BUILD_INTERFACE:${PROJECT_BINARY_DIR}/pb/${NAME}/generated>
       )
 
   disable_clang_tidy(${NAME})

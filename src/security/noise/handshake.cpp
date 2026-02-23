@@ -151,11 +151,14 @@ namespace libp2p::security::noise {
     OUTCOME_TRY(remote_id, peer::PeerId::fromPublicKey(remote_payload.second));
     auto &&handy_payload = remote_payload.first;
     if (initiator_ and remote_peer_id_ != remote_id) {
-      SL_DEBUG(log_,
-               "Remote peer id mismatches already known, expected {}, got {}",
-               remote_peer_id_->toHex(),
-               remote_id.toHex());
-      return std::errc::bad_address;
+      log_->warn("Remote peer id differs from expected: expected {}, got {} "
+                 "(accepting actual peer id)",
+               remote_peer_id_->toBase58(),
+               remote_id.toBase58());
+      // Accept the actual peer ID instead of failing.
+      // This is needed for eth2 beacon chain bootnodes where the ENR secp256k1
+      // key may differ from the libp2p identity key used in the Noise handshake.
+      remote_peer_id_ = remote_id;
     }
     Bytes to_verify;
     to_verify.reserve(kPayloadPrefix.size()

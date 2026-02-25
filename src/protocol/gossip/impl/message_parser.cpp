@@ -10,6 +10,8 @@
 
 #include "message_receiver.hpp"
 
+#include <libp2p/peer/peer_id.hpp>
+
 #include <generated/protocol/gossip/protobuf/rpc.pb.h>
 
 namespace libp2p::protocol::gossip {
@@ -92,25 +94,37 @@ namespace libp2p::protocol::gossip {
         if (pr.has_backoff()) {
           backoff_time = pr.backoff();
         }
-        log()->debug(
-            "prune backoff={}, {} peers", backoff_time, pr.peers_size());
-        for (const auto &peer : pr.peers()) {
-          // TODO(artem): meshsub 1.1.0 + signed peer records NYI
-
-          log()->debug("peer id size={}, signed peer record size={}",
-                       peer.peerid().size(),
-                       peer.signedpeerrecord().size());
+        log()->info(
+            "prune backoff={}, {} PX peers", backoff_time, pr.peers_size());
+        for (const auto &peer_info : pr.peers()) {
+          if (peer_info.peerid().empty()) {
+            continue;
+          }
+          auto peer_id_res = peer::PeerId::fromBytes(BytesIn(
+              reinterpret_cast<const uint8_t *>(peer_info.peerid().data()),
+              peer_info.peerid().size()));
+          if (peer_id_res) {
+            log()->info("PX peer: {}", peer_id_res.value().toBase58());
+            receiver.onPrunePeerExchange(peer_id_res.value());
+          } else {
+            log()->debug("PX peer: invalid peer id ({} bytes)",
+                         peer_info.peerid().size());
+          }
         }
         receiver.onPrune(from, pr.topicid(), backoff_time);
       }
     }
 
     for (const auto &m : pb_msg_->publish()) {
-      if (!m.has_from() || !m.has_data() || !m.has_seqno() || !m.has_topic()) {
+      // In eth2 StrictNoSign mode, messages have no `from` or `seqno` fields.
+      // Only `data` and `topic` are required.
+      if (!m.has_data() || !m.has_topic()) {
         continue;
       }
       auto message = std::make_shared<TopicMessage>(
-          fromString(m.from()), fromString(m.seqno()), fromString(m.data()));
+          m.has_from() ? fromString(m.from()) : Bytes{},
+          m.has_seqno() ? fromString(m.seqno()) : Bytes{},
+          fromString(m.data()));
       message->topic = m.topic();
       if (m.has_signature()) {
         message->signature = fromString(m.signature());

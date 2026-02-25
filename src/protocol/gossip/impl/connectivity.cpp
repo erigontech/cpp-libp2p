@@ -108,6 +108,14 @@ namespace libp2p::protocol::gossip {
       auto ctx = std::make_shared<PeerContext>(id);
       all_peers_.insert(ctx);
       connectable_peers_.insert(ctx);
+
+      // Dial immediately instead of waiting for next heartbeat.
+      // This ensures the gossipsub stream is established before
+      // the remote peer's timeout fires (e.g. eth2 peers disconnect
+      // within seconds if no gossipsub stream is negotiated).
+      if (started_) {
+        dial(ctx);
+      }
     }
   }
 

@@ -531,7 +531,9 @@ namespace libp2p::security::tls_details {
       CASE_X(X509_V_ERR_IP_ADDRESS_MISMATCH)
       CASE_X(X509_V_ERR_INVALID_CALL)
       CASE_X(X509_V_ERR_STORE_LOOKUP)
+#ifdef X509_V_ERR_NAME_CONSTRAINTS_WITHOUT_SANS
       CASE_X(X509_V_ERR_NAME_CONSTRAINTS_WITHOUT_SANS)
+#endif
 
 #undef CASE_X
       default:

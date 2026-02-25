@@ -39,6 +39,9 @@ namespace libp2p::protocol::gossip {
                          const TopicId &topic,
                          uint64_t backoff_time) = 0;
 
+    /// Peer exchange info received in PRUNE message (gossipsub v1.1)
+    virtual void onPrunePeerExchange(const peer::PeerId &peer_id) = 0;
+
     /// Message received
     virtual void onTopicMessage(const PeerContextPtr &from,
                                 TopicMessage::Ptr msg) = 0;

@@ -160,9 +160,17 @@ namespace libp2p::protocol {
       return stream->reset();
     }
 
-    log_->info("received an identify message from peer {}, {}",
+    log_->info("received an identify message from peer {}, {} ({} protocols)",
                peer_id_str,
-               peer_addr_str);
+               peer_addr_str,
+               msg_res.value().protocols_size());
+    for (const auto &proto : msg_res.value().protocols()) {
+      if (proto.find("meshsub") != std::string::npos ||
+          proto.find("status") != std::string::npos ||
+          proto.find("metadata") != std::string::npos) {
+        log_->info("  peer protocol: {}", proto);
+      }
+    }
     stream->close([self{shared_from_this()},
                    p = std::move(peer_id_str),
                    a = std::move(peer_addr_str)](auto &&res) {

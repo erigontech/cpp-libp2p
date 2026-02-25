@@ -72,6 +72,7 @@ namespace libp2p::protocol::gossip {
     void onPrune(const PeerContextPtr &from,
                  const TopicId &topic,
                  uint64_t backoff_time) override;
+    void onPrunePeerExchange(const peer::PeerId &peer_id) override;
     void onTopicMessage(const PeerContextPtr &from,
                         TopicMessage::Ptr msg) override;
     void onMessageEnd(const PeerContextPtr &from) override;

@@ -96,6 +96,10 @@ namespace libp2p::protocol::gossip {
   }
 
   void TopicSubscriptions::onHeartbeat(Time now) {
+    if (self_subscribed_) {
+      log_.debug("heartbeat: topic={} mesh={} subscribed={} backoff={}",
+                 topic_, mesh_peers_.size(), subscribed_peers_.size(), dont_bother_until_.size());
+    }
     if (self_subscribed_ && !subscribed_peers_.empty()) {
       // add/remove mesh members according to desired network density D
       size_t sz = mesh_peers_.size();
@@ -208,8 +212,12 @@ namespace libp2p::protocol::gossip {
     if (self_subscribed_ && !mesh_is_full) {
       mesh_peers_.insert(p);
       subscribed_peers_.erase(p->peer_id);
+      log_.info("accepted GRAFT from peer {} (mesh size={}) for topic {}",
+                p->str, mesh_peers_.size(), topic_);
     } else {
-      // we don't have mesh for the topic
+      // we don't have mesh for the topic or mesh is full
+      log_.info("rejecting GRAFT from peer {} (self_sub={}, mesh={}/{}) for topic {}",
+                p->str, self_subscribed_, mesh_peers_.size(), config_.D_max, topic_);
       p->message_builder->addPrune(topic_);
       connectivity_.peerIsWritable(p, true);
     }
@@ -217,11 +225,13 @@ namespace libp2p::protocol::gossip {
 
   void TopicSubscriptions::onPrune(const PeerContextPtr &p,
                                    Time dont_bother_until) {
-    mesh_peers_.erase(p->peer_id);
+    bool was_in_mesh = mesh_peers_.erase(p->peer_id).has_value();
     if (p->subscribed_to.count(topic_) != 0) {
       subscribed_peers_.insert(p);
       dont_bother_until_.insert({p, dont_bother_until});
     }
+    log_.info("onPrune: peer {} was_in_mesh={} (mesh size={}, subscribed={}) for topic {}",
+              p->str, was_in_mesh, mesh_peers_.size(), subscribed_peers_.size(), topic_);
   }
 
   void TopicSubscriptions::addToMesh(const PeerContextPtr &p) {
@@ -230,10 +240,10 @@ namespace libp2p::protocol::gossip {
     p->message_builder->addGraft(topic_);
     connectivity_.peerIsWritable(p, false);
     mesh_peers_.insert(p);
-    log_.debug("peer {} added to mesh (size={}) for topic {}",
-               p->str,
-               mesh_peers_.size(),
-               topic_);
+    log_.info("peer {} added to mesh (size={}) for topic {}",
+              p->str,
+              mesh_peers_.size(),
+              topic_);
   }
 
   void TopicSubscriptions::removeFromMesh(const PeerContextPtr &p) {
@@ -242,10 +252,10 @@ namespace libp2p::protocol::gossip {
     p->message_builder->addPrune(topic_);
     connectivity_.peerIsWritable(p, false);
     subscribed_peers_.insert(p);
-    log_.debug("peer {} removed from mesh (size={}) for topic {}",
-               p->str,
-               mesh_peers_.size(),
-               topic_);
+    log_.info("peer {} removed from mesh (size={}) for topic {}",
+              p->str,
+              mesh_peers_.size(),
+              topic_);
   }
 
 }  // namespace libp2p::protocol::gossip

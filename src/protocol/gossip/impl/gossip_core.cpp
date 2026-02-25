@@ -223,11 +223,11 @@ namespace libp2p::protocol::gossip {
                            const MessageId &msg_id) {
     assert(started_);
 
-    log_.debug("peer {} has msg for topic {}", from->str, topic);
+    log_.info("IHAVE from peer {} for topic {}", from->str, topic);
 
     if (remote_subscriptions_->hasTopic(topic)
         && !msg_cache_.contains(msg_id)) {
-      log_.debug("requesting msg id {:x}", msg_id);
+      log_.info("requesting IWANT msg_id={:x} from peer {}", msg_id, from->str);
 
       from->message_builder->addIWant(msg_id);
       connectivity_->peerIsWritable(from, false);
@@ -236,21 +236,21 @@ namespace libp2p::protocol::gossip {
 
   void GossipCore::onIWant(const PeerContextPtr &from,
                            const MessageId &msg_id) {
-    log_.debug("peer {} wants message {:x}", from->str, msg_id);
+    log_.info("IWANT from peer {} for msg_id={:x}", from->str, msg_id);
 
     auto msg_found = msg_cache_.getMessage(msg_id);
     if (msg_found) {
       from->message_builder->addMessage(*msg_found.value(), msg_id);
       connectivity_->peerIsWritable(from, true);
     } else {
-      log_.debug("wanted message not in cache");
+      log_.info("IWANT: message not in cache");
     }
   }
 
   void GossipCore::onGraft(const PeerContextPtr &from, const TopicId &topic) {
     assert(started_);
 
-    log_.debug("graft from peer {} for topic {}", from->str, topic);
+    log_.info("GRAFT from peer {} for topic {}", from->str, topic);
 
     remote_subscriptions_->onGraft(from, topic);
   }
@@ -260,9 +260,20 @@ namespace libp2p::protocol::gossip {
                            uint64_t backoff_time) {
     assert(started_);
 
-    log_.debug("prune from peer {} for topic {}", from->str, topic);
+    log_.info("PRUNE from peer {} for topic {}, backoff={}s", from->str, topic, backoff_time);
 
     remote_subscriptions_->onPrune(from, topic, backoff_time);
+  }
+
+  void GossipCore::onPrunePeerExchange(const peer::PeerId &peer_id) {
+    if (!started_) {
+      return;
+    }
+    if (peer_id == local_peer_id_) {
+      return;
+    }
+    log_.info("PX: adding peer {} from PRUNE peer exchange", peer_id.toBase58());
+    addBootstrapPeer(peer_id, boost::none);
   }
 
   void GossipCore::onTopicMessage(const PeerContextPtr &from,
@@ -277,7 +288,8 @@ namespace libp2p::protocol::gossip {
     }
 
     MessageId msg_id = create_message_id_(msg->from, msg->seq_no, msg->data, msg->topic);
-    log_.debug("message arrived, msg id={:x}", msg_id);
+    log_.info("MESSAGE arrived from peer {}, topic={}, size={}, msg_id={:x}",
+              from->str, msg->topic, msg->data.size(), msg_id);
 
     if (msg_cache_.contains(msg_id)) {
       // already there, ignore

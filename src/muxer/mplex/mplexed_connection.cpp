@@ -186,6 +186,9 @@ namespace libp2p::connection {
 
     readFrame(connection_,
               [self{shared_from_this()}](auto &&frame_res) mutable {
+                if (!self->is_active_) {
+                  return;  // connection already closing, discard late callbacks
+                }
                 if (!frame_res) {
                   self->log_->error("cannot read frame from the connection: {}",
                                     frame_res.error());
@@ -325,6 +328,11 @@ namespace libp2p::connection {
   }
 
   void MplexedConnection::closeSession() {
+    if (!is_active_) {
+      return;  // already closing or closed, avoid re-entry and use-after-free
+    }
+    is_active_ = false;  // set early to prevent re-entrant close from pending callbacks
+
     for (auto &[_, stream] : streams_) {
       // all that stuff to be refactored
       (void)stream->commitData(BytesIn{}, 0);

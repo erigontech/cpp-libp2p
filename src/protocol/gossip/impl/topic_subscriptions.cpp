@@ -176,13 +176,19 @@ namespace libp2p::protocol::gossip {
   void TopicSubscriptions::onPeerSubscribed(const PeerContextPtr &p) {
     assert(p->subscribed_to.count(topic_) != 0);
 
-    subscribed_peers_.insert(p);
+    // Immediately GRAFT when mesh needs peers — don't wait for heartbeat.
+    // This prevents a dead state where mesh_peers_ is empty and the heartbeat
+    // skips repair because subscribed_peers_ was also empty when it last ran.
+    if (self_subscribed_ && mesh_peers_.size() < config_.D_min) {
+      addToMesh(p);
+    } else {
+      subscribed_peers_.insert(p);
+    }
 
     // announce the peer about messages available for the topic
     for (const auto &[_, msg_id] : seen_cache_) {
       p->message_builder->addIHave(topic_, msg_id);
     }
-    // will be sent on next heartbeat
     connectivity_.peerIsWritable(p, false);
   }
 

@@ -179,8 +179,15 @@ namespace libp2p::protocol::gossip {
     // Immediately GRAFT when mesh needs peers — don't wait for heartbeat.
     // This prevents a dead state where mesh_peers_ is empty and the heartbeat
     // skips repair because subscribed_peers_ was also empty when it last ran.
+    // BUT: respect the backoff list to avoid BehaviourPenalty from peers
+    // who recently pruned us (gossipsub v1.1 anti-flood).
     if (self_subscribed_ && mesh_peers_.size() < config_.D_min) {
-      addToMesh(p);
+      auto it = dont_bother_until_.find(p);
+      if (it == dont_bother_until_.end()) {
+        addToMesh(p);
+      } else {
+        subscribed_peers_.insert(p);
+      }
     } else {
       subscribed_peers_.insert(p);
     }
@@ -236,8 +243,9 @@ namespace libp2p::protocol::gossip {
       subscribed_peers_.insert(p);
       dont_bother_until_.insert({p, dont_bother_until});
     }
-    log_.info("onPrune: peer {} was_in_mesh={} (mesh size={}, subscribed={}) for topic {}",
-              p->str, was_in_mesh, mesh_peers_.size(), subscribed_peers_.size(), topic_);
+    log_.info("onPrune: peer {} was_in_mesh={} (mesh={}, subscribed={}, backoff_until={}ms) for topic {}",
+              p->str, was_in_mesh, mesh_peers_.size(), subscribed_peers_.size(),
+              dont_bother_until.count(), topic_);
   }
 
   void TopicSubscriptions::addToMesh(const PeerContextPtr &p) {

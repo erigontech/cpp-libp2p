@@ -6,6 +6,8 @@
 
 #pragma once
 
+#include <unordered_map>
+
 #include <libp2p/common/metrics/instance_count.hpp>
 
 #include "common.hpp"
@@ -41,6 +43,9 @@ namespace libp2p::protocol::gossip {
 
     /// If true, then outbound connection is in progress
     bool is_connecting = false;
+
+    /// Per-topic mesh entry time for P1 (TimeInMesh) scoring
+    std::unordered_map<TopicId, Time> mesh_since;
 
     ~PeerContext() = default;
     PeerContext(PeerContext &&) = delete;

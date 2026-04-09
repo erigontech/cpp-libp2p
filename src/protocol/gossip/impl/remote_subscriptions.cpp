@@ -155,7 +155,7 @@ namespace libp2p::protocol::gossip {
     }
     if (create_if_not_exist) {
       auto [it, _] = table_.emplace(
-          topic, TopicSubscriptions(topic, config_, connectivity_, log_));
+          topic, TopicSubscriptions(topic, config_, connectivity_, scheduler_, log_));
       TopicSubscriptions &item = it->second;
       connectivity_.getConnectedPeers().selectIf(
           [&item](const PeerContextPtr &ctx) { item.onPeerSubscribed(ctx); },

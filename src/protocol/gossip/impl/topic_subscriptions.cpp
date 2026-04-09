@@ -32,10 +32,12 @@ namespace libp2p::protocol::gossip {
   TopicSubscriptions::TopicSubscriptions(TopicId topic,
                                          const Config &config,
                                          Connectivity &connectivity,
+                                         basic::Scheduler &scheduler,
                                          log::SubLogger &log)
       : topic_(std::move(topic)),
         config_(config),
         connectivity_(connectivity),
+        scheduler_(scheduler),
         self_subscribed_(false),
         fanout_period_ends_(0),
         log_(log) {}
@@ -120,10 +122,20 @@ namespace libp2p::protocol::gossip {
           subscribed_peers_.erase(p->peer_id);
         }
       } else if (sz > config_.D_max) {
-        auto peers = mesh_peers_.selectRandomPeers(sz - config_.D_max);
-        for (auto &p : peers) {
-          removeFromMesh(p);
-          mesh_peers_.erase(p->peer_id);
+        // Prune lowest-scored peers (P1: TimeInMesh) instead of random
+        auto all_mesh = mesh_peers_.selectRandomPeers(sz);  // get all
+        std::sort(all_mesh.begin(), all_mesh.end(),
+            [this, &now](const PeerContextPtr &a, const PeerContextPtr &b) {
+              auto a_it = a->mesh_since.find(topic_);
+              auto b_it = b->mesh_since.find(topic_);
+              Time a_time = (a_it != a->mesh_since.end()) ? (now - a_it->second) : Time{0};
+              Time b_time = (b_it != b->mesh_since.end()) ? (now - b_it->second) : Time{0};
+              return a_time < b_time;  // lowest time first
+            });
+        size_t to_prune = sz - config_.D_max;
+        for (size_t i = 0; i < to_prune && i < all_mesh.size(); ++i) {
+          removeFromMesh(all_mesh[i]);
+          mesh_peers_.erase(all_mesh[i]->peer_id);
         }
       }
     }
@@ -254,6 +266,7 @@ namespace libp2p::protocol::gossip {
     p->message_builder->addGraft(topic_);
     connectivity_.peerIsWritable(p, false);
     mesh_peers_.insert(p);
+    p->mesh_since[topic_] = scheduler_.now();
     log_.info("peer {} added to mesh (size={}) for topic {}",
               p->str,
               mesh_peers_.size(),
@@ -265,6 +278,7 @@ namespace libp2p::protocol::gossip {
 
     p->message_builder->addPrune(topic_);
     connectivity_.peerIsWritable(p, false);
+    p->mesh_since.erase(topic_);
     subscribed_peers_.insert(p);
     log_.info("peer {} removed from mesh (size={}) for topic {}",
               p->str,

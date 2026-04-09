@@ -24,6 +24,7 @@ namespace libp2p::protocol::gossip {
     TopicSubscriptions(TopicId topic,
                        const Config &config,
                        Connectivity &connectivity,
+                       basic::Scheduler &scheduler,
                        log::SubLogger &log);
 
     /// Returns true if no peers subscribed and not self-subscribed and
@@ -64,6 +65,7 @@ namespace libp2p::protocol::gossip {
     const TopicId topic_;
     const Config &config_;
     Connectivity &connectivity_;
+    basic::Scheduler &scheduler_;
 
     /// This host subscribed to this topic or not, this affects mesh behavior
     bool self_subscribed_;

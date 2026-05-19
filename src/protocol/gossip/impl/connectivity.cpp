@@ -6,6 +6,7 @@
 
 #include "connectivity.hpp"
 
+#include <algorithm>
 #include <cassert>
 
 #include <boost/range/algorithm/for_each.hpp>
@@ -38,7 +39,23 @@ namespace libp2p::protocol::gossip {
         connected_cb_(std::move(on_connected)),
         log_("gossip",
              "Connectivity",
-             host_->getPeerInfo().id.toBase58().substr(46)) {}
+             host_->getPeerInfo().id.toBase58().substr(46)) {
+    // Pre-build the outbound multiselect candidate list once. libp2p-go does
+    // this fallback chain; without it, dialing only one version causes
+    // multiselect rejections when peers (e.g. post-Fulu Lighthouse) advertise
+    // a different version in identify. Configured version goes first.
+    outbound_protocol_candidates_ = {"/meshsub/1.3.0", "/meshsub/1.2.0",
+                                     "/meshsub/1.1.0", "/meshsub/1.0.0"};
+    auto it = std::find(outbound_protocol_candidates_.begin(),
+                        outbound_protocol_candidates_.end(),
+                        config_.protocol_version);
+    if (it == outbound_protocol_candidates_.end()) {
+        outbound_protocol_candidates_.insert(outbound_protocol_candidates_.begin(),
+                                             config_.protocol_version);
+    } else {
+        std::rotate(outbound_protocol_candidates_.begin(), it, it + 1);
+    }
+  }
 
   Connectivity::~Connectivity() {
     stop();
@@ -57,8 +74,31 @@ namespace libp2p::protocol::gossip {
           onStreamEvent(std::move(from), event);
         };
 
+    // Accept inbound gossipsub streams on any of the well-known meshsub
+    // protocol versions in addition to the one we dial out with. libp2p-go
+    // (Lighthouse / Teku / Prysm / Lodestar) defaults to dialing the latest
+    // version it supports (currently `/meshsub/1.2.0`) and only retries with
+    // older versions on the OUTBOUND side — when those clients initiate a
+    // stream to us, we MUST advertise a handler for the version they pick or
+    // they treat us as incompatible and drop the connection. The wire format
+    // is backward-compatible across these versions; this Connectivity treats
+    // them all as the same gossipsub session.
+    static const std::vector<peer::ProtocolName> kAcceptedGossipsubVersions{
+        "/meshsub/1.0.0",
+        "/meshsub/1.1.0",
+        "/meshsub/1.2.0",
+        "/meshsub/1.3.0",
+    };
+    auto inbound_versions = kAcceptedGossipsubVersions;
+    bool has_configured = false;
+    for (const auto& v : inbound_versions) {
+        if (v == config_.protocol_version) { has_configured = true; break; }
+    }
+    if (!has_configured) {
+        inbound_versions.push_back(config_.protocol_version);
+    }
     host_->setProtocolHandler(
-        {config_.protocol_version},
+        inbound_versions,
         [self_wptr=weak_from_this()]
             (StreamAndProtocol stream) {
           auto h = self_wptr.lock();
@@ -240,7 +280,7 @@ namespace libp2p::protocol::gossip {
     // clang-format off
     host_->newStream(
         pi,
-        {config_.protocol_version},
+        outbound_protocol_candidates(),
         [wptr = weak_from_this(), this, ctx=ctx] (auto &&rstream) mutable {
             auto self = wptr.lock();
           if (self) {
@@ -261,7 +301,7 @@ namespace libp2p::protocol::gossip {
     // clang-format off
     host_->newStream(
         ctx->peer_id,
-        {config_.protocol_version},
+        outbound_protocol_candidates(),
         [wptr = weak_from_this(), this, ctx=ctx] (auto &&rstream) mutable {
           auto self = wptr.lock();
           if (self) {

@@ -79,6 +79,14 @@ namespace libp2p::protocol::gossip {
     /// Tries to connect to peer over existing connection
     void dialOverExistingConnection(const PeerContextPtr &peer);
 
+    /// Returns the ordered list of /meshsub/x.y.z protocol IDs to propose in
+    /// multiselect on an outbound dial. Computed once at construction (the
+    /// configured version doesn't change for the Connectivity lifetime) and
+    /// reused per dial to avoid repeated vector allocations.
+    const std::vector<peer::ProtocolName>& outbound_protocol_candidates() const {
+      return outbound_protocol_candidates_;
+    }
+
     /// Outbound stream result callback
     void onNewStream(const PeerContextPtr &ctx,
                      StreamAndProtocolOrError rstream);
@@ -106,6 +114,8 @@ namespace libp2p::protocol::gossip {
     ConnectionStatusFeedback connected_cb_;
     Stream::Feedback on_stream_event_;
     bool started_ = false;
+    /// Cached outbound multiselect candidates; see outbound_protocol_candidates().
+    std::vector<peer::ProtocolName> outbound_protocol_candidates_;
 
     /// All known peers
     PeerSet all_peers_;

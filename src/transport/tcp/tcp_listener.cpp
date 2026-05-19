@@ -35,6 +35,14 @@ namespace libp2p::transport {
       // setup acceptor, throws
       acceptor_.open(endpoint.protocol());
       acceptor_.set_option(ip::tcp::acceptor::reuse_address(true));
+      // Linux/BSD SO_REUSEPORT lets the same listen port be re-bound by a
+      // freshly-restarted process while old sockets are still in TIME_WAIT.
+      // Without this, a crash + immediate restart fails to bind the libp2p
+      // listener until the TIME_WAIT entries expire (~60s on Linux).
+      using reuse_port_option = boost::asio::detail::socket_option::boolean<SOL_SOCKET, SO_REUSEPORT>;
+      boost::system::error_code rp_ec;
+      acceptor_.set_option(reuse_port_option(true), rp_ec);
+      // Non-fatal if the OS doesn't support SO_REUSEPORT.
       acceptor_.bind(endpoint);
       acceptor_.listen();
 

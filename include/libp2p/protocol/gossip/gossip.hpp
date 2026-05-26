@@ -10,6 +10,7 @@
 #include <functional>
 #include <set>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 #include <boost/optional.hpp>
@@ -36,6 +37,60 @@ namespace libp2p {
 }  // namespace libp2p
 
 namespace libp2p::protocol::gossip {
+
+  /// Per-topic peer-score weights. Mirrors go-libp2p's TopicScoreParams.
+  /// All defaults are zero ("feature off"); callers override the ones they
+  /// care about.
+  struct TopicScoreParams {
+    /// Weight of this topic against the global score cap.
+    double topic_weight = 0.5;
+
+    /// P1: time in mesh — reward for being in the mesh.
+    /// Score contribution = min(time_in_mesh / quantum, cap) * weight.
+    double time_in_mesh_weight = 0.0;
+    std::chrono::seconds time_in_mesh_quantum{12};
+    double time_in_mesh_cap = 300.0;
+
+    /// P4: invalid message deliveries — strong penalty.
+    /// Score contribution = -(counter^2) * weight.
+    double invalid_message_deliveries_weight = 0.0;
+    double invalid_message_deliveries_decay = 0.5;
+  };
+
+  /// Global peer-score weights. Mirrors go-libp2p's PeerScoreParams (the
+  /// subset that meaningfully drives mesh stability for eth2).
+  struct PeerScoreParams {
+    /// Per-topic parameters, keyed by topic id.
+    std::unordered_map<std::string, TopicScoreParams> topics;
+
+    /// Cap on per-topic contribution before global summation.
+    double topic_score_cap = 32.72;
+
+    /// P7: behaviour penalty — accumulated on protocol violations (e.g.
+    /// GRAFT before backoff). Score = -max(0, counter - threshold)^2 * weight.
+    double behaviour_penalty_weight = 0.0;
+    double behaviour_penalty_threshold = 6.0;
+    double behaviour_penalty_decay = 0.5;
+
+    /// Counter decay period (typically one slot).
+    std::chrono::seconds decay_interval{12};
+
+    /// Counter values below this are clamped to zero after decay.
+    double decay_to_zero = 0.01;
+
+    /// Retain disconnected peers' scores for this long so reconnecting peers
+    /// don't reset their penalty history. Zero disables retention.
+    std::chrono::seconds retain_score{3600};
+  };
+
+  /// Score thresholds. Mirrors go-libp2p's PeerScoreThresholds.
+  struct PeerScoreThresholds {
+    double gossip_threshold = -4000.0;
+    double publish_threshold = -8000.0;
+    double graylist_threshold = -16000.0;
+    double accept_px_threshold = 100.0;
+    double opportunistic_graft_threshold = 5.0;
+  };
 
   /// Gossip pub-sub protocol config
   struct Config {
@@ -91,6 +146,13 @@ namespace libp2p::protocol::gossip {
 
     /// Sign published messages
     bool sign_messages = false;
+
+    /// Peer-score parameters and thresholds. When all weights are zero
+    /// (the default), scoring is effectively disabled — but the bookkeeping
+    /// still runs at near-zero cost, so eth2 callers can leave the toggle
+    /// alone and just supply non-zero weights for the topics that matter.
+    PeerScoreParams peer_score_params;
+    PeerScoreThresholds peer_score_thresholds;
   };
 
   using TopicId = std::string;

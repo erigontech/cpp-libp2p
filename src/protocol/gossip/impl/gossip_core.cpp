@@ -63,6 +63,8 @@ namespace libp2p::protocol::gossip {
             }
         )),
         msg_seq_(scheduler_->now().count()),
+        heartbeat_timer_(),
+        scorer_(config_.peer_score_params, config_.peer_score_thresholds),
         log_("gossip", "Gossip", local_peer_id_.toBase58().substr(46)) {}
   // clang-format on
 
@@ -309,7 +311,13 @@ namespace libp2p::protocol::gossip {
     }
 
     if (!valid) {
-      log_.debug("message validation failed");
+      // P4 (InvalidMessageDeliveries): record against the sender so the
+      // scorer can graylist peers that consistently send junk. With
+      // invalid_message_deliveries_weight = -140 (caplin default), a single
+      // bad message already costs the peer significantly.
+      PeerScorer::recordInvalidMessage(*from, msg->topic);
+      log_.debug("message validation failed (P4 penalty applied to {})",
+                 from->str);
       return;
     }
 
@@ -338,6 +346,17 @@ namespace libp2p::protocol::gossip {
 
     // shift cache
     msg_cache_.shift();
+
+    // Tick the peer scorer once per heartbeat. The scorer applies counter
+    // decay and refreshes PeerContext::cached_score for every connected peer.
+    // Subsequent mesh-selection passes use the cache directly (O(1) lookup).
+    // The internal decay_interval gate inside tick() keeps the work bounded
+    // even at high heartbeat rates.
+    auto now = scheduler_->now();
+    std::vector<PeerContextPtr> ticked;
+    connectivity_->getConnectedPeers().selectAll(
+        [&ticked](const PeerContextPtr &p) { ticked.push_back(p); });
+    scorer_.tick(now, ticked);
 
     // heartbeat changes per topic
     remote_subscriptions_->onHeartbeat();

@@ -16,6 +16,7 @@
 
 #include "message_cache.hpp"
 #include "message_receiver.hpp"
+#include "peer_scorer.hpp"
 #include "peer_set.hpp"
 
 namespace libp2p::protocol::gossip {
@@ -145,6 +146,17 @@ namespace libp2p::protocol::gossip {
     /// Heartbeat timer handle
     basic::Scheduler::Handle heartbeat_timer_;
 
+    /// Peer scorer — decays counters and recomputes cached_score on each
+    /// heartbeat. Provides thresholds for graylist / publish / gossip cutoffs.
+    /// Public accessors are provided so other components (Connectivity,
+    /// TopicSubscriptions, message handlers) can record penalties.
+    PeerScorer scorer_;
+
+   public:
+    PeerScorer &scorer() { return scorer_; }
+    const PeerScorer &scorer() const { return scorer_; }
+
+   private:
     /// Logger
     log::SubLogger log_;
   };

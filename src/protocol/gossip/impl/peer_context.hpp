@@ -47,6 +47,18 @@ namespace libp2p::protocol::gossip {
     /// Per-topic mesh entry time for P1 (TimeInMesh) scoring
     std::unordered_map<TopicId, Time> mesh_since;
 
+    /// Per-topic exponentially-decayed P4 counter (invalid messages).
+    /// Incremented on bad messages, decayed each scoring tick.
+    std::unordered_map<TopicId, double> invalid_msg_deliveries;
+
+    /// P7: behaviour penalty counter (decayed each scoring tick).
+    /// Incremented for protocol violations (e.g. GRAFT before backoff expires).
+    double behaviour_penalty = 0.0;
+
+    /// Cached score from the most recent PeerScorer::tick(). Lookups use this
+    /// directly; recompute only happens on tick().
+    double cached_score = 0.0;
+
     ~PeerContext() = default;
     PeerContext(PeerContext &&) = delete;
     PeerContext(const PeerContext &) = delete;

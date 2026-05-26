@@ -14,6 +14,7 @@ libp2p_add_library(p2p_gossip
     topic_subscriptions.cpp
     peer_set.cpp
     peer_context.cpp
+    peer_scorer.cpp
     message_cache.cpp
     connectivity.cpp
     stream.cpp

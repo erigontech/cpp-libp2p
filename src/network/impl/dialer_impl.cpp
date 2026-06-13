@@ -7,6 +7,8 @@
 #include <functional>
 #include <iostream>
 
+#include <fmt/ranges.h>
+
 #include <libp2p/connection/stream.hpp>
 #include <libp2p/log/logger.hpp>
 #include <libp2p/network/impl/dialer_impl.hpp>

@@ -9,6 +9,8 @@
 #include <cctype>
 #include <span>
 
+#include <fmt/ranges.h>
+
 #include <libp2p/basic/read.hpp>
 #include <libp2p/basic/scheduler.hpp>
 #include <libp2p/basic/write.hpp>

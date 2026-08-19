@@ -239,8 +239,14 @@ namespace libp2p::protocol::gossip {
       // is an IWANT burst storm that gets this node rate-limited by peers
       // (observed 2026-08-15: beacon_block delivery collapsed in minutes).
       bool eager = false;
+      // A/B toggle: default ON; set SILKWORM_GOSSIP_EAGER_IWANT=0 to fall back
+      // to the pure heartbeat path so coverage can be compared across runs.
+      static const bool eager_enabled = [] {
+        const char* env = std::getenv("SILKWORM_GOSSIP_EAGER_IWANT");
+        return env == nullptr || env[0] != '0';
+      }();
       static constexpr std::string_view kEagerTopicSuffix = "/beacon_block/ssz_snappy";
-      if (topic.size() >= kEagerTopicSuffix.size()
+      if (eager_enabled && topic.size() >= kEagerTopicSuffix.size()
           && std::equal(kEagerTopicSuffix.rbegin(), kEagerTopicSuffix.rend(), topic.rbegin())
           && eager_iwant_seen_.insert(msg_id).second) {
         eager_iwant_order_.push_back(msg_id);
@@ -249,6 +255,10 @@ namespace libp2p::protocol::gossip {
           eager_iwant_order_.pop_front();
         }
         eager = true;
+        // Countable marker for the A/B analysis: how often the eager path
+        // actually fires (vs. beacon blocks arriving via mesh push, where
+        // IWANT latency is irrelevant).
+        log_.info("eager IWANT flush msg_id={:x} from peer {}", msg_id, from->str);
       }
       connectivity_->peerIsWritable(from, eager);
     }

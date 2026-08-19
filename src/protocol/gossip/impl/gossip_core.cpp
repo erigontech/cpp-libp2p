@@ -232,7 +232,25 @@ namespace libp2p::protocol::gossip {
       log_.info("requesting IWANT msg_id={:x} from peer {}", msg_id, from->str);
 
       from->message_builder->addIWant(msg_id);
-      connectivity_->peerIsWritable(from, false);
+      // Eager pull for latency-critical sparse topics (eth2 beacon blocks):
+      // flush the IWANT immediately, but ONLY for the first advertiser of
+      // this msg_id — later IHAVEs for the same id go the lazy heartbeat
+      // path. An unconditional immediate flush (all topics, all advertisers)
+      // is an IWANT burst storm that gets this node rate-limited by peers
+      // (observed 2026-08-15: beacon_block delivery collapsed in minutes).
+      bool eager = false;
+      static constexpr std::string_view kEagerTopicSuffix = "/beacon_block/ssz_snappy";
+      if (topic.size() >= kEagerTopicSuffix.size()
+          && std::equal(kEagerTopicSuffix.rbegin(), kEagerTopicSuffix.rend(), topic.rbegin())
+          && eager_iwant_seen_.insert(msg_id).second) {
+        eager_iwant_order_.push_back(msg_id);
+        if (eager_iwant_order_.size() > 256) {
+          eager_iwant_seen_.erase(eager_iwant_order_.front());
+          eager_iwant_order_.pop_front();
+        }
+        eager = true;
+      }
+      connectivity_->peerIsWritable(from, eager);
     }
   }
 

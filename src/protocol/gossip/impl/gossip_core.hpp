@@ -9,6 +9,8 @@
 #include <libp2p/protocol/gossip/gossip.hpp>
 
 #include <map>
+#include <deque>
+#include <set>
 
 #include <libp2p/basic/scheduler.hpp>
 #include <libp2p/host/host.hpp>
@@ -116,6 +118,14 @@ namespace libp2p::protocol::gossip {
 
     /// Message cache w/expiration
     MessageCache msg_cache_;
+
+    /// Recently eager-IWANTed message ids (bounded FIFO): ensures only the
+    /// FIRST IHAVE advertiser of a latency-critical message triggers an
+    /// immediately-flushed IWANT; later advertisers of the same id go the
+    /// lazy heartbeat path. Prevents the one-request-per-advertiser burst
+    /// storm that collapsed beacon_block delivery (2026-08-15).
+    std::set<MessageId> eager_iwant_seen_;
+    std::deque<MessageId> eager_iwant_order_;
 
     /// Local subscriptions manager (this host subscribed to topics)
     std::shared_ptr<LocalSubscriptions> local_subscriptions_;

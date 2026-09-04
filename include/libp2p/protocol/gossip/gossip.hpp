@@ -211,6 +211,16 @@ namespace libp2p::protocol::gossip {
 
     /// Publishes to topics. Returns false if validation fails or not started
     virtual bool publish(TopicId topic, Bytes data) = 0;
+
+    /// Peers that currently have a live gossip stream (silkworm addition:
+    /// lets the embedder protect gossip-active peers when pruning excess
+    /// raw libp2p connections)
+    virtual std::vector<peer::PeerId> getConnectedPeers() const = 0;
+
+    /// Peers currently grafted into at least one topic mesh (silkworm
+    /// addition: these are the peers that actually deliver messages and must
+    /// survive connection pruning)
+    virtual std::vector<peer::PeerId> getMeshPeers() const = 0;
   };
 
   // Creates Gossip object

@@ -61,6 +61,9 @@ namespace libp2p::protocol::gossip {
                            SubscriptionCallback callback) override;
     bool publish(TopicId topic, Bytes data) override;
 
+    std::vector<peer::PeerId> getConnectedPeers() const override;
+    std::vector<peer::PeerId> getMeshPeers() const override;
+
     outcome::result<void> signMessage(TopicMessage &msg) const;
 
     // MessageReceiver overrides

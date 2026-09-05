@@ -130,6 +130,15 @@ namespace libp2p::protocol::gossip {
     std::set<MessageId> eager_iwant_seen_;
     std::deque<MessageId> eager_iwant_order_;
 
+    /// First-delivery registry for beacon_block messages (bounded FIFO):
+    /// msg_id -> (arrival time, delivering peer). Duplicates measure their
+    /// lag against this.
+    std::map<MessageId, std::pair<Time, PeerContextPtr>> first_delivery_;
+    std::deque<MessageId> first_delivery_order_;
+
+    /// Heartbeat counter driving the periodic delivery-stats dump
+    uint64_t heartbeat_seq_ = 0;
+
     /// Local subscriptions manager (this host subscribed to topics)
     std::shared_ptr<LocalSubscriptions> local_subscriptions_;
 

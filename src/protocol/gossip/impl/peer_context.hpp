@@ -59,6 +59,13 @@ namespace libp2p::protocol::gossip {
     /// directly; recompute only happens on tick().
     double cached_score = 0.0;
 
+    /// Delivery telemetry for latency-aware curation (beacon_block only):
+    /// first-delivery credit, duplicate count, EWMA of delivery lag vs the
+    /// first-arrived copy in ms (-1 = no sample yet)
+    uint64_t first_msg_deliveries = 0;
+    uint64_t dup_msg_deliveries = 0;
+    double delivery_lag_ewma_ms = -1.0;
+
     ~PeerContext() = default;
     PeerContext(PeerContext &&) = delete;
     PeerContext(const PeerContext &) = delete;

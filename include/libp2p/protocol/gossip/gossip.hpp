@@ -185,6 +185,10 @@ namespace libp2p::protocol::gossip {
       const Bytes &from;
       const TopicId &topic;
       const Bytes &data;
+      /// base58 id of the peer whose copy was delivered first (empty for
+      /// locally published messages). Under eth2 StrictNoSign 'from' is
+      /// empty, so this is the only usable per-peer attribution.
+      const std::string &delivered_by;
     };
 
     /// Validator of messages arriving from the wire

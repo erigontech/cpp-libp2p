@@ -185,7 +185,7 @@ namespace libp2p::protocol::gossip {
     remote_subscriptions_->onNewMessage(boost::none, msg, msg_id);
 
     if (config_.echo_forward_mode) {
-      local_subscriptions_->forwardMessage(msg);
+      local_subscriptions_->forwardMessage(msg, {});
     }
 
     return true;
@@ -324,6 +324,14 @@ namespace libp2p::protocol::gossip {
     addBootstrapPeer(peer_id, boost::none);
   }
 
+  namespace {
+    bool isBeaconBlockTopic(const TopicId &topic) {
+      static constexpr std::string_view kSuffix = "/beacon_block/ssz_snappy";
+      return topic.size() >= kSuffix.size()
+          && std::equal(kSuffix.rbegin(), kSuffix.rend(), topic.rbegin());
+    }
+  }  // namespace
+
   void GossipCore::onTopicMessage(const PeerContextPtr &from,
                                   TopicMessage::Ptr msg) {
     assert(started_);
@@ -336,11 +344,24 @@ namespace libp2p::protocol::gossip {
     }
 
     MessageId msg_id = create_message_id_(msg->from, msg->seq_no, msg->data, msg->topic);
-    log_.info("MESSAGE arrived from peer {}, topic={}, size={}, msg_id={:x}",
-              from->str, msg->topic, msg->data.size(), msg_id);
+    // hot path: every gossip message (attestations included) passes here on
+    // the libp2p-io thread — keep it below the configured info level
+    log_.debug("MESSAGE arrived from peer {}, topic={}, size={}, msg_id={:x}",
+               from->str, msg->topic, msg->data.size(), msg_id);
 
     if (msg_cache_.contains(msg_id)) {
-      // already there, ignore
+      // duplicate delivery: measure this peer's lag vs the first copy
+      if (isBeaconBlockTopic(msg->topic)) {
+        auto it = first_delivery_.find(msg_id);
+        if (it != first_delivery_.end() && it->second.second != from) {
+          const auto lag =
+              static_cast<double>((scheduler_->now() - it->second.first).count());
+          ++from->dup_msg_deliveries;
+          from->delivery_lag_ewma_ms = from->delivery_lag_ewma_ms < 0
+              ? lag
+              : 0.8 * from->delivery_lag_ewma_ms + 0.2 * lag;
+        }
+      }
       log_.debug("ignoring message, already in cache");
       return;
     }
@@ -372,9 +393,26 @@ namespace libp2p::protocol::gossip {
       return;
     }
 
+    if (isBeaconBlockTopic(msg->topic)) {
+      ++from->first_msg_deliveries;
+      if (from->delivery_lag_ewma_ms < 0) {
+        from->delivery_lag_ewma_ms = 0.0;
+      } else {
+        from->delivery_lag_ewma_ms *= 0.8;
+      }
+      first_delivery_.emplace(msg_id, std::make_pair(scheduler_->now(), from));
+      first_delivery_order_.push_back(msg_id);
+      if (first_delivery_order_.size() > 64) {
+        first_delivery_.erase(first_delivery_order_.front());
+        first_delivery_order_.pop_front();
+      }
+      // one line per block: who won the delivery race
+      log_.info("first delivery msg_id={:x} from peer {}", msg_id, from->str);
+    }
+
     log_.debug("forwarding message");
 
-    local_subscriptions_->forwardMessage(msg);
+    local_subscriptions_->forwardMessage(msg, from->str);
     remote_subscriptions_->onNewMessage(from, msg, msg_id);
   }
 
@@ -388,6 +426,18 @@ namespace libp2p::protocol::gossip {
   }
 
   void GossipCore::onHeartbeat() {
+    if (++heartbeat_seq_ % 128 == 0) {
+      connectivity_->getConnectedPeers().selectAll(
+          [this](const PeerContextPtr &ctx) {
+            if (ctx->first_msg_deliveries + ctx->dup_msg_deliveries > 0) {
+              log_.info(
+                  "delivery-stats peer={} first={} dup={} lag_ewma_ms={} mesh={}",
+                  ctx->str, ctx->first_msg_deliveries, ctx->dup_msg_deliveries,
+                  static_cast<int64_t>(ctx->delivery_lag_ewma_ms),
+                  ctx->mesh_since.empty() ? 0 : 1);
+            }
+          });
+    }
     assert(started_);
 
     // shift cache

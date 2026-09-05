@@ -30,10 +30,11 @@ namespace libp2p::protocol::gossip {
     return topics_;
   }
 
-  void LocalSubscriptions::forwardMessage(const TopicMessage::Ptr &msg) {
+  void LocalSubscriptions::forwardMessage(const TopicMessage::Ptr &msg,
+                                          const std::string &delivered_by) {
     assert(msg);
     if (topics_.count(msg->topic) != 0) {
-      Gossip::Message tmp_msg{msg->from, msg->topic, msg->data};
+      Gossip::Message tmp_msg{msg->from, msg->topic, msg->data, delivered_by};
       publish(tmp_msg);
     }
   }

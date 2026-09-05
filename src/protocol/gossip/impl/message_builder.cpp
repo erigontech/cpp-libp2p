@@ -137,10 +137,15 @@ namespace libp2p::protocol::gossip {
     empty_ = false;
   }
 
-  void MessageBuilder::addPrune(const TopicId &topic) {
+  void MessageBuilder::addPrune(const TopicId &topic,
+                                uint64_t backoff_seconds) {
     create_protobuf_structures();
 
-    control_pb_msg_->add_prune()->set_topicid(topic);
+    auto *prune = control_pb_msg_->add_prune();
+    prune->set_topicid(topic);
+    if (backoff_seconds > 0) {
+      prune->set_backoff(backoff_seconds);
+    }
     control_not_empty_ = true;
     empty_ = false;
   }

@@ -54,7 +54,7 @@ namespace libp2p::protocol::gossip {
     void addGraft(const TopicId &topic);
 
     /// Adds prune request
-    void addPrune(const TopicId &topic);
+    void addPrune(const TopicId &topic, uint64_t backoff_seconds = 0);
 
     /// Adds message to be forwarded
     void addMessage(const TopicMessage &msg, const MessageId &msg_id);

@@ -85,6 +85,9 @@ namespace libp2p::protocol::gossip {
     /// Prune backoff times per peer
     std::unordered_map<PeerContextPtr, Time> dont_bother_until_;
 
+    /// Heartbeat counter for the periodic latency-aware mesh swap
+    uint64_t heartbeat_count_ = 0;
+
     log::SubLogger &log_;
   };
 

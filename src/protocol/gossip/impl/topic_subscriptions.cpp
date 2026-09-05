@@ -4,6 +4,11 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
+#include <algorithm>
+#include <cstdlib>
+#include <string_view>
+#include <vector>
+
 #include "topic_subscriptions.hpp"
 
 #include <algorithm>
@@ -13,6 +18,41 @@
 #include "message_builder.hpp"
 
 namespace libp2p::protocol::gossip {
+
+  namespace {
+    // Latency-aware mesh curation (silkworm task #80). Default ON;
+    // SILKWORM_GOSSIP_MESH_CURATION=0 restores the legacy random/newest-first
+    // mesh maintenance for A/B comparison.
+    bool curationEnabled() {
+      static const bool on = [] {
+        const char *env = std::getenv("SILKWORM_GOSSIP_MESH_CURATION");
+        return env == nullptr || env[0] != '0';
+      }();
+      return on;
+    }
+
+    bool isBeaconBlockTopicId(const TopicId &topic) {
+      static constexpr std::string_view kSuffix = "/beacon_block/ssz_snappy";
+      return topic.size() >= kSuffix.size()
+          && std::equal(kSuffix.rbegin(), kSuffix.rend(), topic.rbegin());
+    }
+
+    // Higher is better: first deliveries dominate, duplicate-lag EWMA breaks
+    // ties; unknown lag (-1, no sample yet) is treated as a neutral 1500ms.
+    double deliveryRank(const PeerContextPtr &p) {
+      const double lag =
+          p->delivery_lag_ewma_ms < 0 ? 1500.0 : p->delivery_lag_ewma_ms;
+      return static_cast<double>(p->first_msg_deliveries) * 1000.0 - lag;
+    }
+
+    // Spec mesh target D sits between D_min (grow trigger) and D_max
+    // (prune trigger); grafting is staggered to respect remote backoffs.
+    constexpr size_t kMeshTarget = 8;
+    constexpr size_t kGraftPerHeartbeat = 2;
+    constexpr uint64_t kSwapPeriodBeats = 86;  // ~60s at 700ms heartbeat
+    constexpr uint64_t kPruneBackoffSec = 60;
+    const Time kPruneBackoff = Time{60'000};
+  }  // namespace
 
   namespace {
 
@@ -106,7 +146,37 @@ namespace libp2p::protocol::gossip {
       // add/remove mesh members according to desired network density D
       size_t sz = mesh_peers_.size();
 
-      if (sz < config_.D_min) {
+      // drop expired backoffs so they stop shadowing candidates
+      for (auto it = dont_bother_until_.begin();
+           it != dont_bother_until_.end();) {
+        it = (it->second < now) ? dont_bother_until_.erase(it) : std::next(it);
+      }
+
+      if (sz < config_.D_min && curationEnabled()) {
+        // Grow toward the spec target D, at most kGraftPerHeartbeat per
+        // beat (staggered — hammering GRAFTs draws P7 penalties at
+        // remotes), picking the best-ranked deliverers instead of random.
+        std::vector<PeerContextPtr> candidates;
+        subscribed_peers_.selectIf(
+            [&candidates](const PeerContextPtr &p) { candidates.push_back(p); },
+            [this](const PeerContextPtr &p) {
+              return dont_bother_until_.find(p) == dont_bother_until_.end();
+            });
+        std::sort(candidates.begin(), candidates.end(),
+                  [](const PeerContextPtr &a, const PeerContextPtr &b) {
+                    return deliveryRank(a) > deliveryRank(b);
+                  });
+        const size_t need = std::min(
+            kGraftPerHeartbeat, kMeshTarget > sz ? kMeshTarget - sz : 0);
+        for (size_t i = 0; i < need && i < candidates.size(); ++i) {
+          auto &p = candidates[i];
+          log_.info("[mesh-curation] graft peer={} first={} lag_ms={} topic={}",
+                    p->str, p->first_msg_deliveries,
+                    static_cast<int64_t>(p->delivery_lag_ewma_ms), topic_);
+          addToMesh(p);
+          subscribed_peers_.erase(p->peer_id);
+        }
+      } else if (sz < config_.D_min) {
         auto peers = subscribed_peers_.selectRandomPeers(config_.D_min - sz);
         for (auto &p : peers) {
           auto it = dont_bother_until_.find(p);
@@ -120,6 +190,25 @@ namespace libp2p::protocol::gossip {
 
           addToMesh(p);
           subscribed_peers_.erase(p->peer_id);
+        }
+      } else if (sz > config_.D_max && curationEnabled()) {
+        // Prune worst deliverers back to the spec target, never the peers
+        // that actually win delivery races; pruned peers get a backoff so
+        // we don't re-graft them next beat.
+        auto all_mesh = mesh_peers_.selectRandomPeers(sz);
+        std::sort(all_mesh.begin(), all_mesh.end(),
+                  [](const PeerContextPtr &a, const PeerContextPtr &b) {
+                    return deliveryRank(a) < deliveryRank(b);
+                  });
+        const size_t to_prune = sz - kMeshTarget;
+        for (size_t i = 0; i < to_prune && i < all_mesh.size(); ++i) {
+          auto &p = all_mesh[i];
+          log_.info("[mesh-curation] prune peer={} first={} lag_ms={} topic={}",
+                    p->str, p->first_msg_deliveries,
+                    static_cast<int64_t>(p->delivery_lag_ewma_ms), topic_);
+          dont_bother_until_[p] = now + kPruneBackoff;
+          removeFromMesh(p);
+          mesh_peers_.erase(p->peer_id);
         }
       } else if (sz > config_.D_max) {
         // Prune lowest-scored peers (P1: TimeInMesh) instead of random
@@ -137,6 +226,41 @@ namespace libp2p::protocol::gossip {
           removeFromMesh(all_mesh[i]);
           mesh_peers_.erase(all_mesh[i]->peer_id);
         }
+      }
+    }
+
+    // Latency-aware opportunistic swap (beacon_block only): once per
+    // ~kSwapPeriodBeats, if a non-mesh peer demonstrably out-delivers the
+    // worst mesh member, swap them. No production client selects mesh
+    // members by measured delivery latency — this is the task #80 lever.
+    if (self_subscribed_ && curationEnabled() && isBeaconBlockTopicId(topic_)
+        && ++heartbeat_count_ % kSwapPeriodBeats == 0
+        && mesh_peers_.size() >= config_.D_min) {
+      PeerContextPtr worst, best;
+      mesh_peers_.selectAll([&worst](const PeerContextPtr &p) {
+        if (!worst || deliveryRank(p) < deliveryRank(worst)) worst = p;
+      });
+      subscribed_peers_.selectIf(
+          [&best](const PeerContextPtr &p) {
+            if (!best || deliveryRank(p) > deliveryRank(best)) best = p;
+          },
+          [this](const PeerContextPtr &p) {
+            return dont_bother_until_.find(p) == dont_bother_until_.end();
+          });
+      if (worst && best && best->first_msg_deliveries > 0
+          && (worst->first_msg_deliveries == 0
+              || deliveryRank(best) > deliveryRank(worst) + 500.0)) {
+        log_.info(
+            "[mesh-curation] swap out={} (first={} lag_ms={}) in={} (first={} lag_ms={})",
+            worst->str, worst->first_msg_deliveries,
+            static_cast<int64_t>(worst->delivery_lag_ewma_ms), best->str,
+            best->first_msg_deliveries,
+            static_cast<int64_t>(best->delivery_lag_ewma_ms));
+        dont_bother_until_[worst] = now + kPruneBackoff;
+        removeFromMesh(worst);
+        mesh_peers_.erase(worst->peer_id);
+        addToMesh(best);
+        subscribed_peers_.erase(best->peer_id);
       }
     }
 
@@ -232,6 +356,20 @@ namespace libp2p::protocol::gossip {
       onPeerSubscribed(p);
     }
 
+    if (curationEnabled()) {
+      auto bo = dont_bother_until_.find(p);
+      if (bo != dont_bother_until_.end() && bo->second > scheduler_.now()) {
+        // GRAFT before the backoff we gave them expired: behaviour penalty
+        // (gossipsub v1.1 P7) and refuse.
+        p->behaviour_penalty += 1.0;
+        log_.info("[mesh-curation] GRAFT within backoff from {} (P7={})",
+                  p->str, p->behaviour_penalty);
+        p->message_builder->addPrune(topic_, kPruneBackoffSec);
+        connectivity_.peerIsWritable(p, true);
+        return;
+      }
+    }
+
     bool mesh_is_full = (mesh_peers_.size() >= config_.D_max);
 
     if (self_subscribed_ && !mesh_is_full) {
@@ -243,7 +381,7 @@ namespace libp2p::protocol::gossip {
       // we don't have mesh for the topic or mesh is full
       log_.info("rejecting GRAFT from peer {} (self_sub={}, mesh={}/{}) for topic {}",
                 p->str, self_subscribed_, mesh_peers_.size(), config_.D_max, topic_);
-      p->message_builder->addPrune(topic_);
+      p->message_builder->addPrune(topic_, kPruneBackoffSec);
       connectivity_.peerIsWritable(p, true);
     }
   }
@@ -276,7 +414,7 @@ namespace libp2p::protocol::gossip {
   void TopicSubscriptions::removeFromMesh(const PeerContextPtr &p) {
     assert(p->message_builder);
 
-    p->message_builder->addPrune(topic_);
+    p->message_builder->addPrune(topic_, kPruneBackoffSec);
     connectivity_.peerIsWritable(p, false);
     p->mesh_since.erase(topic_);
     subscribed_peers_.insert(p);

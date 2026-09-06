@@ -47,6 +47,19 @@ namespace libp2p::protocol::gossip {
 
     // Spec mesh target D sits between D_min (grow trigger) and D_max
     // (prune trigger); grafting is staggered to respect remote backoffs.
+    // Spec D_lazy: peers to receive IHAVE gossip per message. The old code
+    // announced to D_max*2 = 24 random peers per message — 4x the spec, per
+    // message, on the hot thread.
+    constexpr size_t kDLazy = 6;
+    // Heartbeat windows of seen messages announced as IHAVE (spec
+    // mcache_gossip) and a bound on ids per topic per beat (spec
+    // max_ihave_length is 5000; we stay far below)
+    constexpr uint32_t kGossipWindows = 3;
+    constexpr size_t kMaxIHavePerBeat = 512;
+    // gossipsub v1.2 IDONTWANT: announce-suppress threshold; only large
+    // messages (blocks) are worth it
+    constexpr size_t kIDontWantMinBytes = 1024;
+
     constexpr size_t kMeshTarget = 8;
     constexpr size_t kGraftPerHeartbeat = 2;
     constexpr uint64_t kSwapPeriodBeats = 86;  // ~60s at 700ms heartbeat
@@ -105,27 +118,43 @@ namespace libp2p::protocol::gossip {
 
     auto origin = peerFrom(*msg);
 
+    const bool announce_idontwant =
+        from.has_value() && msg->data.size() >= kIDontWantMinBytes;
+
     mesh_peers_.selectAll(
-        [this, &msg, &msg_id, &from, &origin](const PeerContextPtr &ctx) {
+        [this, &msg, &msg_id, &from, &origin,
+         announce_idontwant](const PeerContextPtr &ctx) {
           assert(ctx->message_builder);
 
-          if (needToForward(ctx, from, origin)) {
-            ctx->message_builder->addMessage(*msg, msg_id);
-
-            // forward immediately to those in mesh
-            connectivity_.peerIsWritable(ctx, true);
+          if (!needToForward(ctx, from, origin)) {
+            return;
           }
+          // honor the peer's IDONTWANT: they already have this message
+          if (ctx->dont_want.count(msg_id) != 0) {
+            return;
+          }
+          // tell the peer not to send us their copy back (v1.2); rides in
+          // the same RPC as the forwarded message
+          if (announce_idontwant) {
+            ctx->message_builder->addIDontWant(msg_id);
+          }
+          ctx->message_builder->addMessage(*msg, msg_id);
+
+          // forward immediately to those in mesh
+          connectivity_.peerIsWritable(ctx, true);
         });
 
-    auto peers = subscribed_peers_.selectRandomPeers(config_.D_max * 2);
-    for (const auto &ctx : peers) {
-      assert(ctx->message_builder);
+    // Remote messages are announced in heartbeat batches (see onHeartbeat);
+    // only our own publishes announce themselves immediately.
+    if (is_published_locally) {
+      auto peers = subscribed_peers_.selectRandomPeers(kDLazy);
+      for (const auto &ctx : peers) {
+        assert(ctx->message_builder);
 
-      if (needToForward(ctx, from, origin)) {
-        ctx->message_builder->addIHave(topic_, msg_id);
-
-        // local messages announce themselves immediately
-        connectivity_.peerIsWritable(ctx, is_published_locally);
+        if (needToForward(ctx, from, origin)) {
+          ctx->message_builder->addIHave(topic_, msg_id);
+          connectivity_.peerIsWritable(ctx, true);
+        }
       }
     }
 
@@ -225,6 +254,35 @@ namespace libp2p::protocol::gossip {
         for (size_t i = 0; i < to_prune && i < all_mesh.size(); ++i) {
           removeFromMesh(all_mesh[i]);
           mesh_peers_.erase(all_mesh[i]->peer_id);
+        }
+      }
+    }
+
+    // Spec gossip emission: once per heartbeat announce the message ids
+    // seen in the last kGossipWindows heartbeats to kDLazy random non-mesh
+    // subscribers, batched into one control message per peer (the old
+    // per-message announce built 24 IHAVE entries per message on the hot
+    // thread). seen_cache_ stores expiry = seen_at + seen_cache_lifetime.
+    if (self_subscribed_ && !subscribed_peers_.empty() && !seen_cache_.empty()) {
+      const Time min_expiry = now + config_.seen_cache_lifetime_msec
+          - Time{kGossipWindows * config_.heartbeat_interval_msec};
+      std::vector<MessageId> recent;
+      for (auto it = seen_cache_.rbegin();
+           it != seen_cache_.rend() && recent.size() < kMaxIHavePerBeat;
+           ++it) {
+        if (it->first < min_expiry) {
+          break;
+        }
+        recent.push_back(it->second);
+      }
+      if (!recent.empty()) {
+        auto gossip_peers = subscribed_peers_.selectRandomPeers(kDLazy);
+        for (const auto &ctx : gossip_peers) {
+          assert(ctx->message_builder);
+          for (const auto &mid : recent) {
+            ctx->message_builder->addIHave(topic_, mid);
+          }
+          connectivity_.peerIsWritable(ctx, false);
         }
       }
     }

@@ -31,6 +31,7 @@ namespace libp2p::protocol::gossip {
     control_not_empty_ = false;
     ihaves_.clear();
     iwant_.clear();
+    idontwant_.clear();
     messages_added_.clear();
   }
 
@@ -41,6 +42,7 @@ namespace libp2p::protocol::gossip {
     control_not_empty_ = false;
     decltype(ihaves_){}.swap(ihaves_);
     decltype(iwant_){}.swap(iwant_);
+    decltype(idontwant_){}.swap(idontwant_);
     decltype(messages_added_){}.swap(messages_added_);
   }
 
@@ -70,6 +72,13 @@ namespace libp2p::protocol::gossip {
       auto *iw = control_pb_msg_->add_iwant();
       for (auto &mid : iwant_) {
         iw->add_messageids(toString(mid), mid.size());
+      }
+    }
+
+    if (!idontwant_.empty()) {
+      auto *dw = control_pb_msg_->add_idontwant();
+      for (auto &mid : idontwant_) {
+        dw->add_messageids(toString(mid), mid.size());
       }
     }
 
@@ -125,6 +134,12 @@ namespace libp2p::protocol::gossip {
 
   void MessageBuilder::addIWant(const MessageId &msg_id) {
     iwant_.push_back(msg_id);
+    control_not_empty_ = true;
+    empty_ = false;
+  }
+
+  void MessageBuilder::addIDontWant(const MessageId &msg_id) {
+    idontwant_.push_back(msg_id);
     control_not_empty_ = true;
     empty_ = false;
   }

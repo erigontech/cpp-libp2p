@@ -29,6 +29,10 @@ namespace libp2p::protocol::gossip {
     virtual void onIWant(const PeerContextPtr &from,
                          const MessageId &msg_id) = 0;
 
+    /// "Don't send me this message" notification (gossipsub v1.2)
+    virtual void onIDontWant(const PeerContextPtr &from,
+                             const MessageId &msg_id) = 0;
+
     /// Graft request received (gossip mesh control)
     virtual void onGraft(const PeerContextPtr &from, const TopicId &topic) = 0;
 

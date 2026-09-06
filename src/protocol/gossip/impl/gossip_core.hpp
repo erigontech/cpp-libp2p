@@ -74,6 +74,8 @@ namespace libp2p::protocol::gossip {
                  const TopicId &topic,
                  const MessageId &msg_id) override;
     void onIWant(const PeerContextPtr &from, const MessageId &msg_id) override;
+    void onIDontWant(const PeerContextPtr &from,
+                     const MessageId &msg_id) override;
     void onGraft(const PeerContextPtr &from, const TopicId &topic) override;
     void onPrune(const PeerContextPtr &from,
                  const TopicId &topic,

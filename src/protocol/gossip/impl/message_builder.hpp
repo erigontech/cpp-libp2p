@@ -50,6 +50,8 @@ namespace libp2p::protocol::gossip {
     /// Adds "I want" request
     void addIWant(const MessageId &msg_id);
 
+    void addIDontWant(const MessageId &msg_id);
+
     /// Adds graft request
     void addGraft(const TopicId &topic);
 
@@ -79,6 +81,8 @@ namespace libp2p::protocol::gossip {
 
     /// Intermediate struct for building IWant request
     std::vector<MessageId> iwant_;
+
+    std::vector<MessageId> idontwant_;
 
     /// Used to prevent duplicate forwarding
     std::unordered_set<MessageId> messages_added_;

@@ -282,6 +282,19 @@ namespace libp2p::protocol::gossip {
     }
   }
 
+  void GossipCore::onIDontWant(const PeerContextPtr &from,
+                               const MessageId &msg_id) {
+    // gossipsub v1.2: the peer already has this message; suppress our
+    // forward of it (bounded FIFO per peer)
+    if (from->dont_want.insert(msg_id).second) {
+      from->dont_want_order.push_back(msg_id);
+      if (from->dont_want_order.size() > 128) {
+        from->dont_want.erase(from->dont_want_order.front());
+        from->dont_want_order.pop_front();
+      }
+    }
+  }
+
   void GossipCore::onIWant(const PeerContextPtr &from,
                            const MessageId &msg_id) {
     log_.info("IWANT from peer {} for msg_id={:x}", from->str, msg_id);

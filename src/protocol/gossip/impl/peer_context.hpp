@@ -6,6 +6,8 @@
 
 #pragma once
 
+#include <deque>
+#include <set>
 #include <unordered_map>
 
 #include <libp2p/common/metrics/instance_count.hpp>
@@ -58,6 +60,11 @@ namespace libp2p::protocol::gossip {
     /// Cached score from the most recent PeerScorer::tick(). Lookups use this
     /// directly; recompute only happens on tick().
     double cached_score = 0.0;
+
+    /// Message ids this peer asked us not to send (gossipsub v1.2
+    /// IDONTWANT); bounded FIFO maintained by GossipCore::onIDontWant
+    std::set<MessageId> dont_want;
+    std::deque<MessageId> dont_want_order;
 
     /// Delivery telemetry for latency-aware curation (beacon_block only):
     /// first-delivery credit, duplicate count, EWMA of delivery lag vs the

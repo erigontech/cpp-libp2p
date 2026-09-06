@@ -79,6 +79,15 @@ namespace libp2p::protocol::gossip {
         }
       }
 
+      for (const auto &dw : c.idontwant()) {
+        for (const auto &msg_id : dw.messageids()) {
+          if (msg_id.empty()) {
+            continue;
+          }
+          receiver.onIDontWant(from, fromString(msg_id));
+        }
+      }
+
       for (const auto &gr : c.graft()) {
         if (!gr.has_topicid()) {
           continue;

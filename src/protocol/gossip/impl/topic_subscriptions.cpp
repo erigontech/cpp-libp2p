@@ -86,11 +86,13 @@ namespace libp2p::protocol::gossip {
                                          const Config &config,
                                          Connectivity &connectivity,
                                          basic::Scheduler &scheduler,
+                                         std::shared_ptr<score::PeerScore> peer_score,
                                          log::SubLogger &log)
       : topic_(std::move(topic)),
         config_(config),
         connectivity_(connectivity),
         scheduler_(scheduler),
+        peer_score_(std::move(peer_score)),
         self_subscribed_(false),
         fanout_period_ends_(0),
         log_(log) {}
@@ -238,9 +240,14 @@ namespace libp2p::protocol::gossip {
         // that actually win delivery races; pruned peers get a backoff so
         // we don't re-graft them next beat.
         auto all_mesh = mesh_peers_.selectRandomPeers(sz);
+        const auto evict_rank = [this](const PeerContextPtr &p) {
+          double s = peer_score_ ? peer_score_->score(p->peer_id) : 0.0;
+          // A negative gossipsub score dominates: those peers go first.
+          return (s < 0 ? s * 1.0e6 : 0.0) + deliveryRank(p);
+        };
         std::sort(all_mesh.begin(), all_mesh.end(),
-                  [](const PeerContextPtr &a, const PeerContextPtr &b) {
-                    return deliveryRank(a) < deliveryRank(b);
+                  [&evict_rank](const PeerContextPtr &a, const PeerContextPtr &b) {
+                    return evict_rank(a) < evict_rank(b);
                   });
         const size_t to_prune = sz - kMeshTarget;
         for (size_t i = 0; i < to_prune && i < all_mesh.size(); ++i) {
@@ -314,6 +321,40 @@ namespace libp2p::protocol::gossip {
       };
       mesh_peers_.selectAll(decay);
       subscribed_peers_.selectAll(decay);
+      if (peer_score_) {
+        std::vector<double> mesh_scores;
+        mesh_peers_.selectAll([this, &mesh_scores](const PeerContextPtr &p) {
+          mesh_scores.push_back(peer_score_->score(p->peer_id));
+        });
+        if (!mesh_scores.empty()) {
+          std::nth_element(mesh_scores.begin(),
+                           mesh_scores.begin() + mesh_scores.size() / 2,
+                           mesh_scores.end());
+          const double median = mesh_scores[mesh_scores.size() / 2];
+          // Lighthouse opportunistic_graft_threshold = 5.
+          if (median < 5.0 && mesh_peers_.size() < config_.D_max) {
+            std::vector<PeerContextPtr> cands;
+            subscribed_peers_.selectIf(
+                [&cands](const PeerContextPtr &p) { cands.push_back(p); },
+                [this, median](const PeerContextPtr &p) {
+                  return dont_bother_until_.find(p) == dont_bother_until_.end()
+                      && peer_score_->score(p->peer_id) > median;
+                });
+            std::sort(cands.begin(), cands.end(),
+                      [this](const PeerContextPtr &a, const PeerContextPtr &b) {
+                        return peer_score_->score(a->peer_id) >
+                               peer_score_->score(b->peer_id);
+                      });
+            for (size_t i = 0; i < cands.size() && i < 2; ++i) {
+              log_.info("[mesh-curation] opportunistic graft peer={} (median={})",
+                        cands[i]->str, median);
+              addToMesh(cands[i]);
+              subscribed_peers_.erase(cands[i]->peer_id);
+            }
+          }
+        }
+      }
+
       PeerContextPtr worst, best;
       // Minimum mesh residency: a freshly grafted peer has no delivery
       // history yet, so rank-based eviction would cycle it straight back
@@ -451,6 +492,9 @@ namespace libp2p::protocol::gossip {
         // GRAFT before the backoff we gave them expired: behaviour penalty
         // (gossipsub v1.1 P7) and refuse.
         p->behaviour_penalty += 1.0;
+        if (peer_score_) {
+          peer_score_->add_penalty(p->peer_id, 1);
+        }
         log_.info("[mesh-curation] GRAFT within backoff from {} (P7={})",
                   p->str, p->behaviour_penalty);
         p->message_builder->addPrune(topic_, kPruneBackoffSec);
@@ -478,6 +522,9 @@ namespace libp2p::protocol::gossip {
   void TopicSubscriptions::onPrune(const PeerContextPtr &p,
                                    Time dont_bother_until) {
     bool was_in_mesh = mesh_peers_.erase(p->peer_id).has_value();
+    if (peer_score_ && was_in_mesh) {
+      peer_score_->prune(p->peer_id, topic_);
+    }
     if (p->subscribed_to.count(topic_) != 0) {
       subscribed_peers_.insert(p);
       dont_bother_until_.insert({p, dont_bother_until});
@@ -490,6 +537,12 @@ namespace libp2p::protocol::gossip {
   void TopicSubscriptions::addToMesh(const PeerContextPtr &p) {
     assert(p->message_builder);
 
+    if (peer_score_) {
+      peer_score_->graft(
+          p->peer_id, topic_,
+          score::TimePoint{
+              std::chrono::duration_cast<std::chrono::nanoseconds>(scheduler_.now())});
+    }
     p->message_builder->addGraft(topic_);
     connectivity_.peerIsWritable(p, false);
     mesh_peers_.insert(p);
@@ -503,6 +556,9 @@ namespace libp2p::protocol::gossip {
   void TopicSubscriptions::removeFromMesh(const PeerContextPtr &p) {
     assert(p->message_builder);
 
+    if (peer_score_) {
+      peer_score_->prune(p->peer_id, topic_);
+    }
     p->message_builder->addPrune(topic_, kPruneBackoffSec);
     connectivity_.peerIsWritable(p, false);
     p->mesh_since.erase(topic_);

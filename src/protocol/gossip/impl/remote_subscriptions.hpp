@@ -10,6 +10,7 @@
 #include <libp2p/log/sublogger.hpp>
 
 #include "topic_subscriptions.hpp"
+#include "score/peer_score2.hpp"
 
 namespace libp2p::protocol::gossip {
 
@@ -21,6 +22,7 @@ namespace libp2p::protocol::gossip {
     RemoteSubscriptions(const Config &config,
                         Connectivity &connectivity,
                         basic::Scheduler &scheduler,
+                        std::shared_ptr<score::PeerScore> peer_score,
                         log::SubLogger &log);
 
     /// This host subscribes or unsubscribes
@@ -65,6 +67,7 @@ namespace libp2p::protocol::gossip {
     const Config &config_;
     Connectivity &connectivity_;
     basic::Scheduler &scheduler_;
+    std::shared_ptr<score::PeerScore> peer_score_;
 
     // TODO(artem): bound table size (which may grow!)
     // by removing items not subscribed to locally. LRU(???)

@@ -19,6 +19,7 @@
 #include "message_cache.hpp"
 #include "message_receiver.hpp"
 #include "peer_scorer.hpp"
+#include "score/peer_score2.hpp"
 #include "peer_set.hpp"
 
 namespace libp2p::protocol::gossip {
@@ -169,6 +170,13 @@ namespace libp2p::protocol::gossip {
 
     /// Heartbeat timer handle
     basic::Scheduler::Handle heartbeat_timer_;
+
+    /// Verbatim gossipsub v1.1 peer scoring (ported from rust-libp2p /
+    /// Lighthouse): P1-P7 with decay, delivery records, retained scores.
+    std::shared_ptr<score::PeerScore> peer_score2_;
+    score::PeerScoreThresholds score_thresholds2_;
+    Time last_score_refresh_{};
+    void ensureTopicScoreParams(const TopicId &topic);
 
     /// Peer scorer — decays counters and recomputes cached_score on each
     /// heartbeat. Provides thresholds for graylist / publish / gossip cutoffs.

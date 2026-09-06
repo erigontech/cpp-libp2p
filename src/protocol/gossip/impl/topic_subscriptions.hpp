@@ -11,6 +11,7 @@
 #include <libp2p/log/sublogger.hpp>
 
 #include "peer_set.hpp"
+#include "score/peer_score2.hpp"
 
 namespace libp2p::protocol::gossip {
 
@@ -25,6 +26,7 @@ namespace libp2p::protocol::gossip {
                        const Config &config,
                        Connectivity &connectivity,
                        basic::Scheduler &scheduler,
+                       std::shared_ptr<score::PeerScore> peer_score,
                        log::SubLogger &log);
 
     /// Returns true if no peers subscribed and not self-subscribed and
@@ -65,6 +67,7 @@ namespace libp2p::protocol::gossip {
     const TopicId topic_;
     const Config &config_;
     Connectivity &connectivity_;
+    std::shared_ptr<score::PeerScore> peer_score_;
     basic::Scheduler &scheduler_;
 
     /// This host subscribed to this topic or not, this affects mesh behavior

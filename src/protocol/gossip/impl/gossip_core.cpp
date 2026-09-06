@@ -65,7 +65,16 @@ namespace libp2p::protocol::gossip {
         msg_seq_(scheduler_->now().count()),
         heartbeat_timer_(),
         scorer_(config_.peer_score_params, config_.peer_score_thresholds),
-        log_("gossip", "Gossip", local_peer_id_.toBase58().substr(46)) {}
+        log_("gossip", "Gossip", local_peer_id_.toBase58().substr(46)) {
+    // Verbatim Lighthouse/rust-libp2p scoring. Global params only at
+    // construction; per-topic params are installed lazily when topics are
+    // seen (fork-digest-dependent names), see ensureTopicScoreParams.
+    auto params = score::lighthouse_mainnet_params("", {});
+    params.topics.clear();
+    score_thresholds2_ = score::lighthouse_thresholds();
+    peer_score2_ = std::make_shared<score::PeerScore>(std::move(params),
+                                                     score_thresholds2_);
+  }
   // clang-format on
 
   void GossipCore::addBootstrapPeer(
@@ -111,7 +120,7 @@ namespace libp2p::protocol::gossip {
     }
 
     remote_subscriptions_ = std::make_shared<RemoteSubscriptions>(
-        config_, *connectivity_, *scheduler_, log_);
+        config_, *connectivity_, *scheduler_, peer_score2_, log_);
 
     started_ = true;
 
@@ -338,6 +347,11 @@ namespace libp2p::protocol::gossip {
   }
 
   namespace {
+    inline score::TimePoint toScoreTime(Time t) {
+      return score::TimePoint{
+          std::chrono::duration_cast<std::chrono::nanoseconds>(t)};
+    }
+
     bool isBeaconBlockTopic(const TopicId &topic) {
       static constexpr std::string_view kSuffix = "/beacon_block/ssz_snappy";
       return topic.size() >= kSuffix.size()
@@ -356,7 +370,16 @@ namespace libp2p::protocol::gossip {
       return;
     }
 
+    // Graylist gate (gossipsub v1.1): ignore everything from peers whose
+    // score fell below the graylist threshold.
+    if (peer_score2_->score(from->peer_id) < score_thresholds2_.graylist_threshold) {
+      log_.debug("graylisted peer {}, dropping message", from->str);
+      return;
+    }
+    ensureTopicScoreParams(msg->topic);
+
     MessageId msg_id = create_message_id_(msg->from, msg->seq_no, msg->data, msg->topic);
+    const std::string msg_id_str(msg_id.begin(), msg_id.end());
     // hot path: every gossip message (attestations included) passes here on
     // the libp2p-io thread — keep it below the configured info level
     log_.debug("MESSAGE arrived from peer {}, topic={}, size={}, msg_id={:x}",
@@ -375,6 +398,8 @@ namespace libp2p::protocol::gossip {
               : 0.8 * from->delivery_lag_ewma_ms + 0.2 * lag;
         }
       }
+      peer_score2_->duplicated_message(from->peer_id, msg_id_str, msg->topic,
+                                       toScoreTime(scheduler_->now()));
       log_.debug("ignoring message, already in cache");
       return;
     }
@@ -390,16 +415,22 @@ namespace libp2p::protocol::gossip {
       }
     }
 
+    peer_score2_->validate_message(from->peer_id, msg_id_str, msg->topic,
+                                   toScoreTime(scheduler_->now()));
     if (!valid) {
-      // P4 (InvalidMessageDeliveries): record against the sender so the
-      // scorer can graylist peers that consistently send junk. With
-      // invalid_message_deliveries_weight = -140 (caplin default), a single
-      // bad message already costs the peer significantly.
+      // P4 (InvalidMessageDeliveries): verbatim rust-libp2p semantics — the
+      // reject fans out to every peer that delivered this id and the record
+      // marks later copies invalid on arrival.
+      peer_score2_->reject_message(from->peer_id, msg_id_str, msg->topic,
+                                   score::RejectReason::kValidationError,
+                                   toScoreTime(scheduler_->now()));
       PeerScorer::recordInvalidMessage(*from, msg->topic);
       log_.debug("message validation failed (P4 penalty applied to {})",
                  from->str);
       return;
     }
+    peer_score2_->deliver_message(from->peer_id, msg_id_str, msg->topic,
+                                  toScoreTime(scheduler_->now()));
 
     if (!msg_cache_.insert(msg, msg_id)) {
       log_.error("message cache error");
@@ -467,6 +498,17 @@ namespace libp2p::protocol::gossip {
         [&ticked](const PeerContextPtr &p) { ticked.push_back(p); });
     scorer_.tick(now, ticked);
 
+    // Verbatim scorer: decay/refresh once per decay_interval (12s), then
+    // publish scores into PeerContext::cached_score for mesh decisions.
+    if (last_score_refresh_ == Time{} ||
+        now - last_score_refresh_ >= peer_score2_->params().decay_interval) {
+      last_score_refresh_ = now;
+      peer_score2_->refresh_scores(toScoreTime(now));
+      for (auto &p : ticked) {
+        p->cached_score = peer_score2_->score(p->peer_id);
+      }
+    }
+
     // heartbeat changes per topic
     remote_subscriptions_->onHeartbeat();
 
@@ -477,10 +519,32 @@ namespace libp2p::protocol::gossip {
     setTimerHeartbeat();
   }
 
+  void GossipCore::ensureTopicScoreParams(const TopicId &topic) {
+    if (peer_score2_->params().topics.count(topic) != 0) {
+      return;
+    }
+    // Pattern-match eth2 topic names; other topics score only globally.
+    const bool is_block = topic.find("/beacon_block/") != std::string::npos;
+    const bool is_subnet =
+        topic.find("/beacon_attestation_") != std::string::npos;
+    if (!is_block && !is_subnet) {
+      return;
+    }
+    auto tmpl = is_block
+        ? score::lighthouse_mainnet_params(topic, {})
+        : score::lighthouse_mainnet_params("__unused__", {topic});
+    auto it = tmpl.topics.find(topic);
+    if (it != tmpl.topics.end()) {
+      peer_score2_->set_topic_params(topic, it->second);
+      log_.info("score params installed for {}", topic);
+    }
+  }
+
   void GossipCore::onPeerConnection(bool connected, const PeerContextPtr &ctx) {
     assert(started_);
 
     if (connected) {
+      peer_score2_->add_peer(ctx->peer_id);
       log_.debug("peer {} connected", ctx->str);
       // notify the new peer about all topics we subscribed to
       if (!local_subscriptions_->subscribedTo().empty()) {
@@ -491,6 +555,7 @@ namespace libp2p::protocol::gossip {
         connectivity_->flush();
       }
     } else {
+      peer_score2_->remove_peer(ctx->peer_id, toScoreTime(scheduler_->now()));
       log_.debug("peer {} disconnected", ctx->str);
       remote_subscriptions_->onPeerDisconnected(ctx);
     }

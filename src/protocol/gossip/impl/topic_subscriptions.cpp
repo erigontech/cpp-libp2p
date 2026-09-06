@@ -307,8 +307,26 @@ namespace libp2p::protocol::gossip {
     if (self_subscribed_ && curationEnabled() && isBeaconBlockTopicId(topic_)
         && ++heartbeat_count_ % kSwapPeriodBeats == 0
         && mesh_peers_.size() >= config_.D_min) {
+      // Decay delivery history (~halves every 7 min) so a burst of firsts
+      // earned as an eager pusher cannot outrank live performance forever.
+      const auto decay = [](const PeerContextPtr &p) {
+        p->first_msg_deliveries -= (p->first_msg_deliveries + 9) / 10;
+      };
+      mesh_peers_.selectAll(decay);
+      subscribed_peers_.selectAll(decay);
       PeerContextPtr worst, best;
-      mesh_peers_.selectAll([&worst](const PeerContextPtr &p) {
+      // Minimum mesh residency: a freshly grafted peer has no delivery
+      // history yet, so rank-based eviction would cycle it straight back
+      // out (observed post subscription-tracking fix: ~15-20 curation
+      // events/min, mesh never settles). Give members 5 minutes to prove
+      // themselves before they can be selected as 'worst'.
+      const auto residency_floor =
+          scheduler_.now() - std::chrono::minutes(5);
+      mesh_peers_.selectAll([&worst, residency_floor, this](const PeerContextPtr &p) {
+        auto since = p->mesh_since.find(topic_);
+        if (since != p->mesh_since.end() && since->second > residency_floor) {
+          return;
+        }
         if (!worst || deliveryRank(p) < deliveryRank(worst)) worst = p;
       });
       subscribed_peers_.selectIf(
@@ -320,7 +338,7 @@ namespace libp2p::protocol::gossip {
           });
       if (worst && best && best->first_msg_deliveries > 0
           && (worst->first_msg_deliveries == 0
-              || deliveryRank(best) > deliveryRank(worst) + 500.0)) {
+              || deliveryRank(best) > deliveryRank(worst) + 3000.0)) {
         log_.info(
             "[mesh-curation] swap out={} (first={} lag_ms={}) in={} (first={} lag_ms={})",
             worst->str, worst->first_msg_deliveries,

@@ -118,6 +118,19 @@ namespace libp2p::protocol::gossip {
 
     auto origin = peerFrom(*msg);
 
+    // A peer that delivers messages on this topic is subscribed to it,
+    // whether or not we ever saw its Subscribe/GRAFT (lost on reconnect,
+    // or sent before our own subscription). Without this, a fast pusher
+    // that keeps us in ITS mesh stays invisible to the curation candidate
+    // pool forever: live node 2026-09-06 had a peer with 294 first
+    // deliveries (21% of all blocks) in neither mesh_peers_ nor
+    // subscribed_peers_, while mesh members delivered 11% combined.
+    if (from.has_value() && !mesh_peers_.contains((*from)->peer_id)
+        && !subscribed_peers_.contains((*from)->peer_id)) {
+      (*from)->subscribed_to.insert(topic_);
+      subscribed_peers_.insert(*from);
+    }
+
     const bool announce_idontwant =
         from.has_value() && msg->data.size() >= kIDontWantMinBytes;
 

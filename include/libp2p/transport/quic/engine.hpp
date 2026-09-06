@@ -6,6 +6,7 @@
 
 #pragma once
 
+#include <libp2p/security/tls/ssl_context.hpp>
 #include <lsquic.h>
 #include <boost/asio/ip/udp.hpp>
 #include <boost/asio/steady_timer.hpp>
@@ -93,7 +94,7 @@ namespace libp2p::transport::lsquic {
   class Engine : public std::enable_shared_from_this<Engine> {
    public:
     Engine(std::shared_ptr<boost::asio::io_context> io_context,
-           std::shared_ptr<boost::asio::ssl::context> ssl_context,
+           std::shared_ptr<security::QuicCertAndKey> quic_material,
            const muxer::MuxedConnectionConfig &mux_config,
            PeerId local_peer,
            std::shared_ptr<crypto::marshaller::KeyMarshaller> key_codec,
@@ -124,7 +125,7 @@ namespace libp2p::transport::lsquic {
     void readLoop();
 
     std::shared_ptr<boost::asio::io_context> io_context_;
-    std::shared_ptr<boost::asio::ssl::context> ssl_context_;
+    void *quic_ssl_ctx_ = nullptr;  // blob-side SSL_CTX (BoringSSL)
     PeerId local_peer_;
     std::shared_ptr<crypto::marshaller::KeyMarshaller> key_codec_;
     boost::asio::ip::udp::socket socket_;

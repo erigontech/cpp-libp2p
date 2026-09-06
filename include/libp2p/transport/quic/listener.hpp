@@ -6,6 +6,7 @@
 
 #pragma once
 
+#include <libp2p/security/tls/ssl_context.hpp>
 #include <libp2p/muxer/muxed_connection_config.hpp>
 #include <libp2p/transport/transport_listener.hpp>
 
@@ -30,7 +31,7 @@ namespace libp2p::transport {
                        public std::enable_shared_from_this<QuicListener> {
    public:
     QuicListener(std::shared_ptr<boost::asio::io_context> io_context,
-                 std::shared_ptr<boost::asio::ssl::context> ssl_context,
+                 std::shared_ptr<security::QuicCertAndKey> quic_material,
                  const muxer::MuxedConnectionConfig &mux_config,
                  PeerId local_peer,
                  std::shared_ptr<crypto::marshaller::KeyMarshaller> key_codec,
@@ -47,7 +48,7 @@ namespace libp2p::transport {
 
    private:
     std::shared_ptr<boost::asio::io_context> io_context_;
-    std::shared_ptr<boost::asio::ssl::context> ssl_context_;
+    std::shared_ptr<security::QuicCertAndKey> quic_material_;
     muxer::MuxedConnectionConfig mux_config_;
     PeerId local_peer_;
     std::shared_ptr<crypto::marshaller::KeyMarshaller> key_codec_;

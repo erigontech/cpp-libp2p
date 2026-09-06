@@ -65,6 +65,9 @@ namespace libp2p::security {
     };
     tls = make();
     quic = make();
+    quic_material = std::make_shared<QuicCertAndKey>(QuicCertAndKey{
+        {r.certificate.begin(), r.certificate.end()},
+        {r.private_key.begin(), r.private_key.end()}});
     SSL_CTX_set_alpn_protos(quic->native_handle(), kAlpn.data(), kAlpn.size());
     SSL_CTX_set_alpn_select_cb(quic->native_handle(), alpnSelect, nullptr);
   }

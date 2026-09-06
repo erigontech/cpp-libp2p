@@ -12,13 +12,13 @@
 namespace libp2p::transport {
   QuicListener::QuicListener(
       std::shared_ptr<boost::asio::io_context> io_context,
-      std::shared_ptr<boost::asio::ssl::context> ssl_context,
+      std::shared_ptr<security::QuicCertAndKey> quic_material,
       const muxer::MuxedConnectionConfig &mux_config,
       PeerId local_peer,
       std::shared_ptr<crypto::marshaller::KeyMarshaller> key_codec,
       TransportListener::HandlerFunc handler)
       : io_context_{std::move(io_context)},
-        ssl_context_{std::move(ssl_context)},
+        quic_material_{std::move(quic_material)},
         mux_config_{mux_config},
         local_peer_{std::move(local_peer)},
         key_codec_{std::move(key_codec)},
@@ -37,7 +37,7 @@ namespace libp2p::transport {
       return ec;
     }
     server_ = std::make_shared<lsquic::Engine>(io_context_,
-                                               ssl_context_,
+                                               quic_material_,
                                                mux_config_,
                                                local_peer_,
                                                key_codec_,

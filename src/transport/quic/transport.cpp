@@ -20,7 +20,7 @@ namespace libp2p::transport {
       const peer::IdentityManager &id_mgr,
       std::shared_ptr<crypto::marshaller::KeyMarshaller> key_codec)
       : io_context_{std::move(io_context)},
-        ssl_context_{ssl_context.quic},
+        quic_material_{ssl_context.quic_material},
         mux_config_{mux_config},
         local_peer_{id_mgr.getId()},
         key_codec_{std::move(key_codec)},
@@ -67,7 +67,7 @@ namespace libp2p::transport {
   std::shared_ptr<TransportListener> QuicTransport::createListener(
       TransportListener::HandlerFunc handler) {
     return std::make_shared<QuicListener>(io_context_,
-                                          ssl_context_,
+                                          quic_material_,
                                           mux_config_,
                                           local_peer_,
                                           key_codec_,
@@ -85,7 +85,7 @@ namespace libp2p::transport {
   std::shared_ptr<lsquic::Engine> QuicTransport::makeClient(
       boost::asio::ip::udp protocol) const {
     return std::make_shared<lsquic::Engine>(io_context_,
-                                            ssl_context_,
+                                            quic_material_,
                                             mux_config_,
                                             local_peer_,
                                             key_codec_,

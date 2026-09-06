@@ -11,6 +11,7 @@ libp2p_add_library(p2p_tls
     tls_details.cpp
     )
 target_link_libraries(p2p_tls
+    libsecp256k1::secp256k1
     Boost::boost
     p2p_crypto_error
     p2p_logger

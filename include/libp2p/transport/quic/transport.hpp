@@ -6,6 +6,7 @@
 
 #pragma once
 
+#include <libp2p/security/tls/ssl_context.hpp>
 #include <boost/asio/ip/udp.hpp>
 #include <libp2p/muxer/muxed_connection_config.hpp>
 #include <libp2p/transport/transport_adaptor.hpp>
@@ -60,7 +61,7 @@ namespace libp2p::transport {
         boost::asio::ip::udp protocol) const;
 
     std::shared_ptr<boost::asio::io_context> io_context_;
-    std::shared_ptr<boost::asio::ssl::context> ssl_context_;
+    std::shared_ptr<security::QuicCertAndKey> quic_material_;
     muxer::MuxedConnectionConfig mux_config_;
     PeerId local_peer_;
     std::shared_ptr<crypto::marshaller::KeyMarshaller> key_codec_;

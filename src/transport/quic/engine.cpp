@@ -17,17 +17,33 @@
 #include <libp2p/transport/quic/stream.hpp>
 #include <libp2p/transport/tcp/tcp_util.hpp>
 #include <qtils/option_take.hpp>
+#include <cstdio>
+
+#include <openssl/x509.h>
+
+// lsquic + BoringSSL blob boundary (see quicblob_shim.c): SSL material
+// crosses only as DER bytes.
+extern "C" void *quicblob_ctx_new(const unsigned char *cert_der,
+                                  size_t cert_len,
+                                  const unsigned char *key_der,
+                                  size_t key_len);
+extern "C" int quicblob_take_peer_cert_der(const void *conn,
+                                           unsigned char *out,
+                                           size_t cap);
 
 namespace libp2p::transport::lsquic {
   Engine::Engine(std::shared_ptr<boost::asio::io_context> io_context,
-                 std::shared_ptr<boost::asio::ssl::context> ssl_context,
+                 std::shared_ptr<security::QuicCertAndKey> quic_material,
                  const muxer::MuxedConnectionConfig &mux_config,
                  PeerId local_peer,
                  std::shared_ptr<crypto::marshaller::KeyMarshaller> key_codec,
                  boost::asio::ip::udp::socket &&socket,
                  bool client)
       : io_context_{std::move(io_context)},
-        ssl_context_{std::move(ssl_context)},
+        quic_ssl_ctx_{quicblob_ctx_new(quic_material->cert_der.data(),
+                                       quic_material->cert_der.size(),
+                                       quic_material->key_der.data(),
+                                       quic_material->key_der.size())},
         local_peer_{std::move(local_peer)},
         key_codec_{std::move(key_codec)},
         socket_{std::move(socket)},
@@ -88,15 +104,27 @@ namespace libp2p::transport::lsquic {
       auto conn_ctx = reinterpret_cast<ConnCtx *>(lsquic_conn_get_ctx(conn));
       auto self = conn_ctx->engine;
       auto ok = status == LSQ_HSK_OK or status == LSQ_HSK_RESUMED_OK;
+      fprintf(stderr, "[quic] handshake %s\n", ok ? "ok" : "failed");
       auto op = qtils::optionTake(conn_ctx->connecting);
       auto res = [&]() -> outcome::result<std::shared_ptr<QuicConnection>> {
         if (not ok) {
           return QuicError::HANDSHAKE_FAILED;
         }
-        auto cert = SSL_get_peer_certificate(lsquic_conn_ssl(conn));
-        OUTCOME_TRY(info,
-                    security::tls_details::verifyPeerAndExtractIdentity(
-                        cert, *self->key_codec_));
+        unsigned char cert_der[8192];
+        const int cert_len = quicblob_take_peer_cert_der(
+            conn, cert_der, sizeof(cert_der));
+        if (cert_len <= 0) {
+          return QuicError::HANDSHAKE_FAILED;
+        }
+        const unsigned char *cert_p = cert_der;
+        auto cert = d2i_X509(nullptr, &cert_p, cert_len);
+        if (cert == nullptr) {
+          return QuicError::HANDSHAKE_FAILED;
+        }
+        auto info_res = security::tls_details::verifyPeerAndExtractIdentity(
+            cert, *self->key_codec_);
+        X509_free(cert);
+        OUTCOME_TRY(info, std::move(info_res));
         if (op and info.peer_id != op->peer) {
           return security::TlsError::TLS_UNEXPECTED_PEER_ID;
         }
@@ -217,7 +245,8 @@ namespace libp2p::transport::lsquic {
     api.ea_packets_out_ctx = this;
     api.ea_get_ssl_ctx = +[](void *void_self, const sockaddr *) {
       auto self = static_cast<Engine *>(void_self);
-      return self->ssl_context_->native_handle();
+      // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast)
+      return reinterpret_cast<ssl_ctx_st *>(self->quic_ssl_ctx_);
     };
 
     engine_ = lsquic_engine_new(flags, &api);

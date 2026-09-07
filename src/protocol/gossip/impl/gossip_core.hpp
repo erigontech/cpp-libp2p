@@ -130,7 +130,7 @@ namespace libp2p::protocol::gossip {
     /// immediately-flushed IWANT; later advertisers of the same id go the
     /// lazy heartbeat path. Prevents the one-request-per-advertiser burst
     /// storm that collapsed beacon_block delivery (2026-08-15).
-    std::set<MessageId> eager_iwant_seen_;
+    std::map<MessageId, uint8_t> eager_iwant_seen_;
     std::deque<MessageId> eager_iwant_order_;
 
     /// First-delivery registry for beacon_block messages (bounded FIFO):

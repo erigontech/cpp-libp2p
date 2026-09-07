@@ -61,6 +61,13 @@ namespace libp2p::protocol::gossip {
     constexpr size_t kIDontWantMinBytes = 1024;
 
     constexpr size_t kMeshTarget = 8;
+    // beacon_block only: match Lighthouse's mainnet mesh_n=5 (mesh_n_high
+    // 10). Low degree concentrates our forwarding speed on few members —
+    // a 100KB block serializes on the uplink, so every extra member makes
+    // our forwards to ALL of them later, diluting per-peer P2. Quality of
+    // members beats count of members (LH: 1650ms with 5; we saw 2000ms
+    // with 8).
+    constexpr size_t kMeshTargetBlock = 8;
     constexpr size_t kGraftPerHeartbeat = 2;
     constexpr uint64_t kSwapPeriodBeats = 86;  // ~60s at 700ms heartbeat
     constexpr uint64_t kPruneBackoffSec = 60;
@@ -196,7 +203,11 @@ namespace libp2p::protocol::gossip {
         it = (it->second < now) ? dont_bother_until_.erase(it) : std::next(it);
       }
 
-      if (sz < config_.D_min && curationEnabled()) {
+      const size_t mesh_target =
+          isBeaconBlockTopicId(topic_) ? kMeshTargetBlock : kMeshTarget;
+      const size_t mesh_limit =
+          isBeaconBlockTopicId(topic_) ? 10 : mesh_target + 4;
+      if (sz < mesh_target && curationEnabled()) {
         // Grow toward the spec target D, at most kGraftPerHeartbeat per
         // beat (staggered — hammering GRAFTs draws P7 penalties at
         // remotes), picking the best-ranked deliverers instead of random.
@@ -211,7 +222,7 @@ namespace libp2p::protocol::gossip {
                     return deliveryRank(a) > deliveryRank(b);
                   });
         const size_t need = std::min(
-            kGraftPerHeartbeat, kMeshTarget > sz ? kMeshTarget - sz : 0);
+            kGraftPerHeartbeat, mesh_target > sz ? mesh_target - sz : 0);
         for (size_t i = 0; i < need && i < candidates.size(); ++i) {
           auto &p = candidates[i];
           log_.info("[mesh-curation] graft peer={} first={} lag_ms={} topic={}",
@@ -235,7 +246,7 @@ namespace libp2p::protocol::gossip {
           addToMesh(p);
           subscribed_peers_.erase(p->peer_id);
         }
-      } else if (sz > config_.D_max && curationEnabled()) {
+      } else if (sz > mesh_limit && curationEnabled()) {
         // Prune worst deliverers back to the spec target, never the peers
         // that actually win delivery races; pruned peers get a backoff so
         // we don't re-graft them next beat.
@@ -249,7 +260,7 @@ namespace libp2p::protocol::gossip {
                   [&evict_rank](const PeerContextPtr &a, const PeerContextPtr &b) {
                     return evict_rank(a) < evict_rank(b);
                   });
-        const size_t to_prune = sz - kMeshTarget;
+        const size_t to_prune = sz - mesh_target;
         for (size_t i = 0; i < to_prune && i < all_mesh.size(); ++i) {
           auto &p = all_mesh[i];
           log_.info("[mesh-curation] prune peer={} first={} lag_ms={} topic={}",
@@ -332,7 +343,9 @@ namespace libp2p::protocol::gossip {
                            mesh_scores.end());
           const double median = mesh_scores[mesh_scores.size() / 2];
           // Lighthouse opportunistic_graft_threshold = 5.
-          if (median < 5.0 && mesh_peers_.size() < config_.D_max) {
+          const size_t og_limit = isBeaconBlockTopicId(topic_)
+              ? 10 : config_.D_max;
+          if (median < 5.0 && mesh_peers_.size() < og_limit) {
             std::vector<PeerContextPtr> cands;
             subscribed_peers_.selectIf(
                 [&cands](const PeerContextPtr &p) { cands.push_back(p); },
@@ -503,7 +516,10 @@ namespace libp2p::protocol::gossip {
       }
     }
 
-    bool mesh_is_full = (mesh_peers_.size() >= config_.D_max);
+    const size_t graft_limit = curationEnabled() && isBeaconBlockTopicId(topic_)
+        ? 10
+        : config_.D_max;
+    bool mesh_is_full = (mesh_peers_.size() >= graft_limit);
 
     if (self_subscribed_ && !mesh_is_full) {
       mesh_peers_.insert(p);

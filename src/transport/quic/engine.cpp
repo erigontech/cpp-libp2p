@@ -66,6 +66,10 @@ namespace libp2p::transport::lsquic {
     settings.es_init_max_stream_data_bidi_local =
         mux_config.maximum_window_size;
     settings.es_init_max_streams_bidi = mux_config.maximum_streams;
+    // Connection-level flow control: default lsquic credit is far below the
+    // per-stream figure above and throttles a busy gossip stream the same
+    // way a small yamux window does. Match the stream allowance.
+    settings.es_init_max_data = mux_config.maximum_window_size;
     settings.es_idle_timeout = std::chrono::duration_cast<std::chrono::seconds>(
                                    mux_config.no_streams_interval)
                                    .count();

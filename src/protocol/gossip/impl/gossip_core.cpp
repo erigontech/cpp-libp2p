@@ -273,15 +273,27 @@ namespace libp2p::protocol::gossip {
         return env == nullptr || env[0] != '0';
       }();
       static constexpr std::string_view kEagerTopicSuffix = "/beacon_block/ssz_snappy";
+      // Race the first K advertisers rather than only the first: block
+      // transmission time (~100KB) makes single-source IWANT a lottery on
+      // the advertiser's send-queue position; 3 parallel pulls take the min
+      // at negligible cost (extra copies are dups we IDONTWANT away).
+      static constexpr uint8_t kEagerAdvertisers = 3;
       if (eager_enabled && topic.size() >= kEagerTopicSuffix.size()
-          && std::equal(kEagerTopicSuffix.rbegin(), kEagerTopicSuffix.rend(), topic.rbegin())
-          && eager_iwant_seen_.insert(msg_id).second) {
-        eager_iwant_order_.push_back(msg_id);
-        if (eager_iwant_order_.size() > 256) {
-          eager_iwant_seen_.erase(eager_iwant_order_.front());
-          eager_iwant_order_.pop_front();
+          && std::equal(kEagerTopicSuffix.rbegin(), kEagerTopicSuffix.rend(), topic.rbegin())) {
+        auto [it, inserted] = eager_iwant_seen_.emplace(msg_id, 0);
+        if (inserted) {
+          eager_iwant_order_.push_back(msg_id);
+          if (eager_iwant_order_.size() > 256) {
+            eager_iwant_seen_.erase(eager_iwant_order_.front());
+            eager_iwant_order_.pop_front();
+          }
         }
-        eager = true;
+        if (it->second < kEagerAdvertisers) {
+          ++it->second;
+          eager = true;
+        }
+      }
+      if (eager) {
         // Countable marker for the A/B analysis: how often the eager path
         // actually fires (vs. beacon blocks arriving via mesh push, where
         // IWANT latency is irrelevant).

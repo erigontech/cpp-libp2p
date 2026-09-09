@@ -57,6 +57,18 @@ namespace libp2p::protocol::gossip {
     /// Remote peer kicks this host out of its mesh
     void onPrune(const PeerContextPtr &p, Time dont_bother_until);
 
+    /// Application-driven mesh curation: graft a connected, topic-subscribed
+    /// peer unless it is under PRUNE backoff or already in the mesh.
+    /// Returns true if a GRAFT was sent.
+    bool tryGraft(const PeerContextPtr &p);
+
+    /// Application-driven mesh curation: prune a current mesh member
+    /// (sends PRUNE with backoff). Returns true if pruned.
+    bool tryPrune(const PeerContextPtr &p);
+
+    /// Authoritative mesh membership (mesh_peers_) for this topic.
+    std::vector<peer::PeerId> meshMemberIds() const;
+
    private:
     /// Adds a peer to mesh
     void addToMesh(const PeerContextPtr &p);

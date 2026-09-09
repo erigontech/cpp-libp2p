@@ -342,10 +342,17 @@ namespace libp2p::protocol::gossip {
                            mesh_scores.begin() + mesh_scores.size() / 2,
                            mesh_scores.end());
           const double median = mesh_scores[mesh_scores.size() / 2];
-          // Lighthouse opportunistic_graft_threshold = 5.
+          // Graft opportunistically only when the mesh is genuinely
+          // underperforming. Lighthouse's opportunistic_graft_threshold=5 is
+          // calibrated to ITS score scale; our healthy mesh medians sit around
+          // 0.4-0.5, so "median < 5.0" was ALWAYS true and grafted 2 peers
+          // every swap period — permanent mesh churn (freshly grafted members
+          // with no delivery history displaced proven ones; measured p50
+          // regression once the residency bookkeeping was fixed). A negative
+          // median is the genuine "mesh is bad" signal on our scale.
           const size_t og_limit = isBeaconBlockTopicId(topic_)
               ? 10 : config_.D_max;
-          if (median < 5.0 && mesh_peers_.size() < og_limit) {
+          if (median < 0.0 && mesh_peers_.size() < og_limit) {
             std::vector<PeerContextPtr> cands;
             subscribed_peers_.selectIf(
                 [&cands](const PeerContextPtr &p) { cands.push_back(p); },
@@ -524,6 +531,17 @@ namespace libp2p::protocol::gossip {
     if (self_subscribed_ && !mesh_is_full) {
       mesh_peers_.insert(p);
       subscribed_peers_.erase(p->peer_id);
+      // Keep mesh_since in sync with actual membership: the curation
+      // residency floor and P1 scoring read it, and remote-grafted members
+      // previously never got an entry (while removed members kept stale
+      // ones), silently breaking both.
+      p->mesh_since[topic_] = scheduler_.now();
+      if (peer_score_) {
+        peer_score_->graft(
+            p->peer_id, topic_,
+            score::TimePoint{std::chrono::duration_cast<std::chrono::nanoseconds>(
+                scheduler_.now())});
+      }
       log_.info("accepted GRAFT from peer {} (mesh size={}) for topic {}",
                 p->str, mesh_peers_.size(), topic_);
     } else {
@@ -538,6 +556,7 @@ namespace libp2p::protocol::gossip {
   void TopicSubscriptions::onPrune(const PeerContextPtr &p,
                                    Time dont_bother_until) {
     bool was_in_mesh = mesh_peers_.erase(p->peer_id).has_value();
+    p->mesh_since.erase(topic_);
     if (peer_score_ && was_in_mesh) {
       peer_score_->prune(p->peer_id, topic_);
     }
@@ -548,6 +567,40 @@ namespace libp2p::protocol::gossip {
     log_.info("onPrune: peer {} was_in_mesh={} (mesh={}, subscribed={}, backoff_until={}ms) for topic {}",
               p->str, was_in_mesh, mesh_peers_.size(), subscribed_peers_.size(),
               dont_bother_until.count(), topic_);
+  }
+
+  std::vector<peer::PeerId> TopicSubscriptions::meshMemberIds() const {
+    std::vector<peer::PeerId> ids;
+    mesh_peers_.selectAll(
+        [&ids](const PeerContextPtr &ctx) { ids.push_back(ctx->peer_id); });
+    return ids;
+  }
+
+  bool TopicSubscriptions::tryGraft(const PeerContextPtr &p) {
+    if (!self_subscribed_) {
+      return false;
+    }
+    if (mesh_peers_.contains(p->peer_id)) {
+      return false;  // already a mesh member
+    }
+    if (dont_bother_until_.find(p) != dont_bother_until_.end()) {
+      return false;  // respect PRUNE backoff (avoid BehaviourPenalty)
+    }
+    if (p->subscribed_to.count(topic_) == 0) {
+      return false;  // peer is not subscribed to this topic
+    }
+    subscribed_peers_.erase(p->peer_id);
+    addToMesh(p);
+    return true;
+  }
+
+  bool TopicSubscriptions::tryPrune(const PeerContextPtr &p) {
+    if (!mesh_peers_.contains(p->peer_id)) {
+      return false;  // not a mesh member
+    }
+    removeFromMesh(p);
+    mesh_peers_.erase(p->peer_id);
+    return true;
   }
 
   void TopicSubscriptions::addToMesh(const PeerContextPtr &p) {

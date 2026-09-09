@@ -149,7 +149,34 @@ namespace libp2p::protocol::gossip {
     }
   }
 
-  boost::optional<TopicSubscriptions &> RemoteSubscriptions::getItem(
+    bool RemoteSubscriptions::tryGraft(const TopicId &topic,
+                                     const PeerContextPtr &p) {
+    auto item = getItem(topic, false);
+    if (!item) {
+      return false;
+    }
+    return item->tryGraft(p);
+  }
+
+  std::vector<peer::PeerId> RemoteSubscriptions::meshMemberIds(
+      const TopicId &topic) {
+    auto item = getItem(topic, false);
+    if (!item) {
+      return {};
+    }
+    return item->meshMemberIds();
+  }
+
+  bool RemoteSubscriptions::tryPrune(const TopicId &topic,
+                                     const PeerContextPtr &p) {
+    auto item = getItem(topic, false);
+    if (!item) {
+      return false;
+    }
+    return item->tryPrune(p);
+  }
+
+boost::optional<TopicSubscriptions &> RemoteSubscriptions::getItem(
       const TopicId &topic, bool create_if_not_exist) {
     auto it = table_.find(topic);
     if (it != table_.end()) {

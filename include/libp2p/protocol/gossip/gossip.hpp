@@ -225,6 +225,18 @@ namespace libp2p::protocol::gossip {
     /// addition: these are the peers that actually deliver messages and must
     /// survive connection pruning)
     virtual std::vector<peer::PeerId> getMeshPeers() const = 0;
+
+    /// Mesh members of one specific topic (application-driven mesh curation)
+    virtual std::vector<peer::PeerId> getTopicMeshPeers(
+        const TopicId &topic) const = 0;
+
+    /// Application-driven mesh curation: graft a connected, topic-subscribed
+    /// peer into the topic mesh (respects PRUNE backoff). True if grafted.
+    virtual bool graftPeer(const TopicId &topic, const peer::PeerId &peer) = 0;
+
+    /// Application-driven mesh curation: prune a mesh member (sends PRUNE
+    /// with backoff). True if pruned.
+    virtual bool prunePeer(const TopicId &topic, const peer::PeerId &peer) = 0;
   };
 
   // Creates Gossip object

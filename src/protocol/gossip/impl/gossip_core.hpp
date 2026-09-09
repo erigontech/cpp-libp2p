@@ -64,6 +64,10 @@ namespace libp2p::protocol::gossip {
 
     std::vector<peer::PeerId> getConnectedPeers() const override;
     std::vector<peer::PeerId> getMeshPeers() const override;
+    std::vector<peer::PeerId> getTopicMeshPeers(
+        const TopicId &topic) const override;
+    bool graftPeer(const TopicId &topic, const peer::PeerId &peer) override;
+    bool prunePeer(const TopicId &topic, const peer::PeerId &peer) override;
 
     outcome::result<void> signMessage(TopicMessage &msg) const;
 

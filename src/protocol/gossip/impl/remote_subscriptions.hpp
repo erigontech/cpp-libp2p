@@ -59,6 +59,11 @@ namespace libp2p::protocol::gossip {
     /// Periodic job needed to update meshes and shift "I have" caches
     void onHeartbeat();
 
+    /// Application-driven mesh curation passthroughs (false if topic unknown)
+    bool tryGraft(const TopicId &topic, const PeerContextPtr &p);
+    bool tryPrune(const TopicId &topic, const PeerContextPtr &p);
+    std::vector<peer::PeerId> meshMemberIds(const TopicId &topic);
+
    private:
     /// Returns table item, creates a new one if needed
     boost::optional<TopicSubscriptions &> getItem(const TopicId &topic,

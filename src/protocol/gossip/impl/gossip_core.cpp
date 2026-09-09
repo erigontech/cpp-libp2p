@@ -218,6 +218,27 @@ namespace libp2p::protocol::gossip {
     return peers;
   }
 
+  std::vector<peer::PeerId> GossipCore::getTopicMeshPeers(
+      const TopicId &topic) const {
+    return remote_subscriptions_->meshMemberIds(topic);
+  }
+
+  bool GossipCore::graftPeer(const TopicId &topic, const peer::PeerId &peer) {
+    auto ctx = connectivity_->getConnectedPeers().find(peer);
+    if (!ctx) {
+      return false;
+    }
+    return remote_subscriptions_->tryGraft(topic, *ctx);
+  }
+
+  bool GossipCore::prunePeer(const TopicId &topic, const peer::PeerId &peer) {
+    auto ctx = connectivity_->getConnectedPeers().find(peer);
+    if (!ctx) {
+      return false;
+    }
+    return remote_subscriptions_->tryPrune(topic, *ctx);
+  }
+
   outcome::result<void> GossipCore::signMessage(TopicMessage &msg) const {
     const auto &keypair = idmgr_->getKeyPair();
     OUTCOME_TRY(signable, MessageBuilder::signableMessage(msg));

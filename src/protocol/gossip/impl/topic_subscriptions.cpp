@@ -24,9 +24,18 @@ namespace libp2p::protocol::gossip {
     // SILKWORM_GOSSIP_MESH_CURATION=0 restores the legacy random/newest-first
     // mesh maintenance for A/B comparison.
     bool curationEnabled() {
+      // Default OFF. Live A/B on mainnet (2026-09-09, paired 30min+ windows
+      // vs a co-located Lighthouse): with the mesh_since residency bookkeeping
+      // fixed, the latency-aware swap machinery actively churns proven mesh
+      // members and REGRESSES first-arrival p50 by ~500ms (delta vs LH 720-767
+      // with curation on, 235 with it off; >4s tail 17 slots vs 0). The stable
+      // mesh converges on a small fast edge that outperforms rank-driven
+      // rotation. Set SILKWORM_GOSSIP_MESH_CURATION=1 to re-enable for
+      // retuning experiments (swap gating needs to be underperformance-driven
+      // over full windows, not periodic rank eviction).
       static const bool on = [] {
         const char *env = std::getenv("SILKWORM_GOSSIP_MESH_CURATION");
-        return env == nullptr || env[0] != '0';
+        return env != nullptr && env[0] == '1';
       }();
       return on;
     }

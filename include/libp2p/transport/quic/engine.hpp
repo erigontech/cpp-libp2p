@@ -67,6 +67,9 @@ namespace libp2p::transport::lsquic {
     std::optional<Connecting> connecting{};
     std::optional<std::shared_ptr<QuicStream>> new_stream{};
     std::weak_ptr<QuicConnection> conn{};
+    // Handshake-completion logic already ran (on_new_conn synthesizes
+    // on_hsk_done for accepted conns; lsquic may deliver the real one too).
+    bool hsk_done{false};
   };
 
   /**

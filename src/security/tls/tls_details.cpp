@@ -487,12 +487,12 @@ namespace libp2p::security::tls_details {
       return TlsError::TLS_INCOMPATIBLE_CERTIFICATE_EXTENSION;
     }
 
-    if (peer_pubkey_res.value().type != crypto::Key::Type::Ed25519) {
-      log()->info("remote peer's public key wrong type");
-      return TlsError::TLS_INCOMPATIBLE_CERTIFICATE_EXTENSION;
-    }
+    // Accept Ed25519 + Secp256k1 identity keys per the libp2p TLS spec:
+    // verifyExtensionSignature below verifies both (Ethereum beacon nodes use
+    // Secp256k1). An Ed25519-only gate here rejects essentially every mainnet
+    // peer's QUIC certificate.
 
-    // 3. Verify
+    // 3. Verify (handles Ed25519 + Secp256k1; rejects unsupported types)
     OUTCOME_TRY(verifyExtensionSignature(peer_certificate,
                                          peer_pubkey_res.value(),
                                          bin_fields.signature,

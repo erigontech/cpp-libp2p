@@ -93,11 +93,19 @@ namespace libp2p::transport::lsquic {
     stream_if.on_conn_closed = +[](lsquic_conn_t *conn) {
       // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast)
       auto conn_ctx = reinterpret_cast<ConnCtx *>(lsquic_conn_get_ctx(conn));
-      if (auto op = qtils::optionTake(conn_ctx->connecting)) {
-        op->cb(QuicError::CONN_CLOSED);
+      auto op = qtils::optionTake(conn_ctx->connecting);
+      // Null the QuicConnection's ctx BEFORE any app callback can run: this
+      // callback fires from inside lsquic teardown (ietf_full_conn_ci_destroy),
+      // and a synchronously-invoked callback that drops the last shared_ptr
+      // re-enters lsquic_conn_close() on the very connection being destroyed
+      // (heap corruption: "corrupted size vs. prev_size" in ci_destroy free).
+      if (auto c = conn_ctx->conn.lock()) {
+        c->onClose();
       }
-      if (auto conn = conn_ctx->conn.lock()) {
-        conn->onClose();
+      // Defer the app callback off the lsquic stack (mirrors on_read).
+      if (op) {
+        post(*conn_ctx->engine->io_context_,
+             [cb{std::move(op->cb)}] { cb(QuicError::CONN_CLOSED); });
       }
       lsquic_conn_set_ctx(conn, nullptr);
       // NOLINTNEXTLINE(cppcoreguidelines-owning-memory)
@@ -109,6 +117,14 @@ namespace libp2p::transport::lsquic {
       auto self = conn_ctx->engine;
       auto ok = status == LSQ_HSK_OK or status == LSQ_HSK_RESUMED_OK;
       fprintf(stderr, "[quic] handshake %s\n", ok ? "ok" : "failed");
+      // Run the handshake-completion logic exactly once: on_new_conn
+      // synthesizes on_hsk_done for accepted connections and lsquic may also
+      // deliver the real one; a second pass would construct a second
+      // QuicConnection aliasing this ConnCtx.
+      if (conn_ctx->hsk_done) {
+        return;
+      }
+      conn_ctx->hsk_done = true;
       auto op = qtils::optionTake(conn_ctx->connecting);
       auto res = [&]() -> outcome::result<std::shared_ptr<QuicConnection>> {
         if (not ok) {
@@ -132,12 +148,37 @@ namespace libp2p::transport::lsquic {
         if (op and info.peer_id != op->peer) {
           return security::TlsError::TLS_UNEXPECTED_PEER_ID;
         }
+        // Inbound (accepted) connections have no Connecting op: derive the
+        // remote endpoint from lsquic instead of dereferencing an empty
+        // optional (UB that read garbage on every accepted QUIC connection).
+        Multiaddress remote_addr = [&] {
+          if (op) {
+            return detail::makeQuicAddr(op->remote).value();
+          }
+          const sockaddr *sa_local = nullptr;
+          const sockaddr *sa_peer = nullptr;
+          lsquic_conn_get_sockaddr(conn, &sa_local, &sa_peer);
+          boost::asio::ip::udp::endpoint ep;
+          if (sa_peer != nullptr and sa_peer->sa_family == AF_INET) {
+            // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast)
+            auto *sin = reinterpret_cast<const sockaddr_in *>(sa_peer);
+            ep = {boost::asio::ip::address_v4{ntohl(sin->sin_addr.s_addr)},
+                  ntohs(sin->sin_port)};
+          } else if (sa_peer != nullptr and sa_peer->sa_family == AF_INET6) {
+            // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast)
+            auto *sin6 = reinterpret_cast<const sockaddr_in6 *>(sa_peer);
+            boost::asio::ip::address_v6::bytes_type b{};
+            memcpy(b.data(), sin6->sin6_addr.s6_addr, b.size());
+            ep = {boost::asio::ip::address_v6{b}, ntohs(sin6->sin6_port)};
+          }
+          return detail::makeQuicAddr(ep).value();
+        }();
         auto conn = std::make_shared<QuicConnection>(
             self->io_context_,
             conn_ctx,
             op.has_value(),
             self->local_,
-            detail::makeQuicAddr(op->remote).value(),
+            std::move(remote_addr),
             self->local_peer_,
             info.peer_id,
             info.public_key);
@@ -179,11 +220,19 @@ namespace libp2p::transport::lsquic {
         +[](lsquic_stream_t *stream, lsquic_stream_ctx_t *_stream_ctx) {
           // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast)
           auto stream_ctx = reinterpret_cast<StreamCtx *>(_stream_ctx);
-          if (auto op = qtils::optionTake(stream_ctx->reading)) {
-            op->cb(QuicError::STREAM_CLOSED);
+          auto op = qtils::optionTake(stream_ctx->reading);
+          // Null the QuicStream's ctx BEFORE any app callback: on_close fires
+          // from ietf_full_conn_ci_destroy's stream-destroy loop; a synchronous
+          // callback that drops the last shared_ptr re-enters
+          // lsquic_stream_close() on the stream being destroyed and mutates
+          // all_streams mid-iteration (SIGSEGV / heap corruption).
+          if (auto s2 = stream_ctx->stream.lock()) {
+            s2->onClose();
           }
-          if (auto stream = stream_ctx->stream.lock()) {
-            stream->onClose();
+          // Defer the app callback off the lsquic stack (mirrors on_read).
+          if (op) {
+            post(*stream_ctx->engine->io_context_,
+                 [cb{std::move(op->cb)}] { cb(QuicError::STREAM_CLOSED); });
           }
           // NOLINTNEXTLINE(cppcoreguidelines-owning-memory)
           delete stream_ctx;

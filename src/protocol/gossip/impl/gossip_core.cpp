@@ -328,6 +328,11 @@ namespace libp2p::protocol::gossip {
                                const MessageId &msg_id) {
     // gossipsub v1.2: the peer already has this message; suppress our
     // forward of it (bounded FIFO per peer)
+    static uint64_t received_total = 0;
+    if (++received_total == 1 || received_total % 1000 == 0) {
+      log_.info("IDONTWANT flowing: received_total={} (last from {})",
+                received_total, from->str);
+    }
     if (from->dont_want.insert(msg_id).second) {
       from->dont_want_order.push_back(msg_id);
       if (from->dont_want_order.size() > 128) {

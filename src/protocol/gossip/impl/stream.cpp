@@ -52,7 +52,8 @@ namespace libp2p::protocol::gossip {
         stream_,
         [self_wptr = weak_from_this(),
          this](outcome::result<multi::UVarint> varint) {
-          if (self_wptr.expired()) {
+          auto self_hold = self_wptr.lock();
+          if (!self_hold) {
             return;
           }
           onLengthRead(std::move(varint));
@@ -85,7 +86,8 @@ namespace libp2p::protocol::gossip {
                  std::span(read_buffer_->data(), msg_len),
                  [self_wptr = weak_from_this(), this, buffer = read_buffer_](
                      outcome::result<void> res) {
-                   if (self_wptr.expired()) {
+                   auto self_hold = self_wptr.lock();
+                   if (!self_hold) {
                      return;
                    }
                    onMessageRead(std::forward<decltype(res)>(res));
@@ -170,7 +172,8 @@ namespace libp2p::protocol::gossip {
     if (timeout_ > std::chrono::milliseconds::zero()) {
       timeout_handle_ = scheduler_.scheduleWithHandle(
           [self_wptr = weak_from_this(), this] {
-            if (self_wptr.expired() || closed_) {
+            auto self_hold = self_wptr.lock();
+            if (!self_hold || closed_) {
               return;
             }
             feedback_(peer_, Error::WRITER_TIMEOUT);
@@ -206,7 +209,8 @@ namespace libp2p::protocol::gossip {
 
   void Stream::asyncPostError(Error error) {
     scheduler_.schedule([this, self_wptr = weak_from_this(), error] {
-      if (self_wptr.expired() || closed_) {
+      auto self_hold = self_wptr.lock();
+      if (!self_hold || closed_) {
         return;
       }
       feedback_(peer_, error);

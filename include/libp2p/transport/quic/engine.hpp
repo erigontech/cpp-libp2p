@@ -128,6 +128,10 @@ namespace libp2p::transport::lsquic {
     void readLoop();
 
     std::shared_ptr<boost::asio::io_context> io_context_;
+    // Re-entrancy guard for lsquic_engine_process_conns/packet_in (single
+    // io thread; plain bools suffice). See Engine::process().
+    bool in_engine_{false};
+    bool pending_process_{false};
     void *quic_ssl_ctx_ = nullptr;  // blob-side SSL_CTX (BoringSSL)
     PeerId local_peer_;
     std::shared_ptr<crypto::marshaller::KeyMarshaller> key_codec_;

@@ -188,10 +188,15 @@ namespace libp2p::transport::lsquic {
       if (not res) {
         lsquic_conn_close(conn);
       }
+      // Defer completion off the lsquic stack for the same reason as
+      // on_new_stream: the connect/accept handlers open streams and write
+      // immediately, re-entering the engine mid-pass.
       if (op) {
-        op->cb(res);
+        post(*self->io_context_,
+             [cb{std::move(op->cb)}, res{std::move(res)}] { cb(res); });
       } else if (res) {
-        self->on_accept_(res.value());
+        post(*self->io_context_,
+             [self, conn2{std::move(res.value())}] { self->on_accept_(conn2); });
       }
     };
     stream_if.on_new_stream = +[](void *void_self, lsquic_stream_t *stream) {
@@ -208,7 +213,14 @@ namespace libp2p::transport::lsquic {
         if (conn_ctx->new_stream) {
           *conn_ctx->new_stream = stream;
         } else {
-          conn->onStream()(stream);
+          // Defer off the lsquic stack: this callback fires inside
+          // lsquic_engine_process_conns, and the app handler (multiselect)
+          // immediately writes, which re-enters the engine — lsquic's own
+          // re-entrancy assert (ENPUB_PROC) is compiled out in the NDEBUG
+          // blob, and the nested pass frees packets/streams the interrupted
+          // outer pass still references (heap corruption, live-observed).
+          post(*self->io_context_,
+               [conn, stream{std::move(stream)}] { conn->onStream()(stream); });
         }
       } else {
         lsquic_stream_close(stream);
@@ -364,7 +376,21 @@ namespace libp2p::transport::lsquic {
   }
 
   void Engine::process() {
+    // Hard re-entrancy guard: lsquic forbids re-entering
+    // lsquic_engine_process_conns (its assert is compiled out in the NDEBUG
+    // blob). If any callback path still reaches process() synchronously,
+    // remember the request and run one trailing pass instead.
+    if (in_engine_) {
+      pending_process_ = true;
+      return;
+    }
+    in_engine_ = true;
     lsquic_engine_process_conns(engine_);
+    while (pending_process_) {
+      pending_process_ = false;
+      lsquic_engine_process_conns(engine_);
+    }
+    in_engine_ = false;
     int us = 0;
     if (not lsquic_engine_earliest_adv_tick(engine_, &us)) {
       return;
@@ -411,6 +437,10 @@ namespace libp2p::transport::lsquic {
         }
         return;
       }
+      // Same re-entrancy rule as process(): callbacks fired from inside
+      // packet_in must not re-enter the engine; they set pending_process_
+      // and the explicit process() below runs the deferred pass.
+      in_engine_ = true;
       lsquic_engine_packet_in(engine_,
                               reading_.buf.data(),
                               n,
@@ -418,6 +448,7 @@ namespace libp2p::transport::lsquic {
                               reading_.remote.data(),
                               this,
                               0);
+      in_engine_ = false;
       process();
     }
   }

@@ -7,6 +7,7 @@
 #pragma once
 
 #include <deque>
+#include <random>
 
 #include <libp2p/log/sublogger.hpp>
 
@@ -99,6 +100,10 @@ namespace libp2p::protocol::gossip {
 
     /// Prune backoff times per peer
     std::unordered_map<PeerContextPtr, Time> dont_bother_until_;
+
+    /// LH-faithful maintenance state (see lhMeshEnabled in the .cpp)
+    uint64_t lh_heartbeat_ticks_ = 0;
+    std::minstd_rand lh_rng_{0x51172};
 
     /// Heartbeat counter for the periodic latency-aware mesh swap
     uint64_t heartbeat_count_ = 0;

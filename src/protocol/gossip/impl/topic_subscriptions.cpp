@@ -11,6 +11,8 @@
 
 #include "topic_subscriptions.hpp"
 
+#include <random>
+
 #include <algorithm>
 #include <cassert>
 
@@ -38,6 +40,68 @@ namespace libp2p::protocol::gossip {
         return env != nullptr && env[0] == '1';
       }();
       return on;
+    }
+
+    // LH-faithful mesh dynamics (2026-09-10): random refill to the spec
+    // target (not the D_min low-water mark), opportunistic grafting of
+    // random above-median deliverers every ~60s, and eviction ONLY at
+    // D_max with the best 4 protected. Ported from Lighthouse's vendored
+    // rust-libp2p gossipsub heartbeat (behaviour.rs mesh maintenance +
+    // opportunistic_graft): its only slow-member pressure is additive
+    // grafting above the mesh median, never periodic rank rotation — the
+    // churn that made the old curation mode regress. Default ON;
+    // SILKWORM_GOSSIP_LH_MESH=0 restores legacy for A/B.
+    bool lhMeshEnabled() {
+      // Default OFF: live A/B 2026-09-10 21:10-21:46 (paired vs LH) regressed
+      // delta p50 348->445, p90 656->832; the refill-to-8 branch ran every
+      // beat (mesh never held 8) and starved the opportunistic graft (0
+      // fired). Same direction as the D_min=8 test: growing OUR mesh adds
+      // duplicate 100KB inbound copies that our late IDONTWANT (riding
+      // BEHIND the forwarded payload) cannot suppress. Re-test after the
+      // immediate-IDONTWANT change.
+      static const bool on = [] {
+        const char *env = std::getenv("SILKWORM_GOSSIP_LH_MESH");
+        return env != nullptr && env[0] == '1';
+      }();
+      return on;
+    }
+
+    // Golden peering (task #81): SILKWORM_GOSSIP_PINNED_PEERS is a
+    // comma-separated list of base58 peer ids (full or suffix). Pinned peers
+    // are grafted into the beacon_block mesh as soon as they subscribe and
+    // are never selected for prune/evict — used to pin the network's
+    // measured-fastest block propagators.
+    const std::vector<std::string> &pinnedPeerIds() {
+      static const std::vector<std::string> ids = [] {
+        std::vector<std::string> v;
+        if (const char *env = std::getenv("SILKWORM_GOSSIP_PINNED_PEERS")) {
+          std::string cur;
+          for (const char *p = env;; ++p) {
+            if (*p == ',' || *p == '\0') {
+              if (!cur.empty()) v.push_back(cur);
+              cur.clear();
+              if (*p == '\0') break;
+            } else {
+              cur.push_back(*p);
+            }
+          }
+        }
+        return v;
+      }();
+      return ids;
+    }
+
+    bool isPinnedPeer(const PeerContextPtr &p) {
+      const auto &ids = pinnedPeerIds();
+      if (ids.empty()) return false;
+      const auto b58 = p->peer_id.toBase58();
+      for (const auto &w : ids) {
+        if (b58.size() >= w.size()
+            && b58.compare(b58.size() - w.size(), w.size(), w) == 0) {
+          return true;
+        }
+      }
+      return false;
     }
 
     bool isBeaconBlockTopicId(const TopicId &topic) {
@@ -78,6 +142,8 @@ namespace libp2p::protocol::gossip {
     // with 8).
     constexpr size_t kMeshTargetBlock = 8;
     constexpr size_t kGraftPerHeartbeat = 2;
+    // ~60s at the 700ms eth2 heartbeat (LH: opportunistic_graft_ticks=60 at 1s)
+    constexpr uint64_t kOpportunisticGraftTicks = 85;
     constexpr uint64_t kSwapPeriodBeats = 86;  // ~60s at 700ms heartbeat
     constexpr uint64_t kPruneBackoffSec = 60;
     const Time kPruneBackoff = Time{60'000};
@@ -165,7 +231,10 @@ namespace libp2p::protocol::gossip {
             return;
           }
           // tell the peer not to send us their copy back (v1.2); rides in
-          // the same RPC as the forwarded message
+          // the same RPC as the forwarded message. NOTE 2026-09-10: an
+          // LH-style separate-tiny-RPC-first variant was A/B-tested live and
+          // REGRESSED the paired first-arrival delta vs Lighthouse from
+          // +348ms to +665ms p50 (45min windows) — keep the piggyback.
           if (announce_idontwant) {
             ctx->message_builder->addIDontWant(msg_id);
           }
@@ -216,7 +285,80 @@ namespace libp2p::protocol::gossip {
           isBeaconBlockTopicId(topic_) ? kMeshTargetBlock : kMeshTarget;
       const size_t mesh_limit =
           isBeaconBlockTopicId(topic_) ? 10 : mesh_target + 4;
-      if (sz < mesh_target && curationEnabled()) {
+      if (lhMeshEnabled() && !curationEnabled()) {
+        // --- LH-faithful maintenance (see lhMeshEnabled comment) ---
+        ++lh_heartbeat_ticks_;
+        if (sz < mesh_target) {
+          // Refill toward the TARGET with random eligible peers (LH refills
+          // to mesh_n when below mesh_n_low; random, score-agnostic —
+          // explore now, evict at trim time). Staggered like the curation
+          // path to respect remote GRAFT-rate penalties.
+          auto peers = subscribed_peers_.selectRandomPeers(
+              std::min(kGraftPerHeartbeat, mesh_target - sz));
+          for (auto &p : peers) {
+            if (dont_bother_until_.find(p) != dont_bother_until_.end()) {
+              continue;
+            }
+            addToMesh(p);
+            subscribed_peers_.erase(p->peer_id);
+          }
+        } else if (sz > config_.D_max) {
+          // Trim: evict worst deliveryRank first (negative gossip score
+          // dominates), protecting the top 4 — LH's retain_scores.
+          auto all_mesh = mesh_peers_.selectRandomPeers(sz);
+          const auto evict_rank = [this](const PeerContextPtr &p) {
+            double gs = peer_score_ ? peer_score_->score(p->peer_id) : 0.0;
+            return (gs < 0 ? gs * 1.0e6 : 0.0) + deliveryRank(p);
+          };
+          std::sort(all_mesh.begin(), all_mesh.end(),
+                    [&evict_rank](const PeerContextPtr &a, const PeerContextPtr &b) {
+                      return evict_rank(a) < evict_rank(b);
+                    });
+          constexpr size_t kRetainBest = 4;
+          size_t to_prune = sz - config_.D_max;
+          size_t evictable = sz > kRetainBest ? sz - kRetainBest : 0;
+          to_prune = std::min(to_prune, evictable);
+          for (size_t i = 0; i < to_prune; ++i) {
+            auto &p = all_mesh[i];
+            dont_bother_until_[p] = now + kPruneBackoff;
+            removeFromMesh(p);
+            mesh_peers_.erase(p->peer_id);
+          }
+        } else if (isBeaconBlockTopicId(topic_) && sz > 1
+                   && lh_heartbeat_ticks_ % kOpportunisticGraftTicks == 0) {
+          // Opportunistic graft (LH behaviour.rs:2684): median deliveryRank
+          // of the mesh; graft up to 2 RANDOM candidates strictly above the
+          // median. Additive only — the mesh grows toward D_max and the
+          // trim branch above evicts the losers.
+          std::vector<double> ranks;
+          mesh_peers_.selectAll([&ranks](const PeerContextPtr &p) {
+            ranks.push_back(deliveryRank(p));
+          });
+          std::sort(ranks.begin(), ranks.end());
+          const double median = ranks.size() % 2 == 1
+              ? ranks[ranks.size() / 2]
+              : (ranks[ranks.size() / 2 - 1] + ranks[ranks.size() / 2]) / 2.0;
+          std::vector<PeerContextPtr> cands;
+          subscribed_peers_.selectIf(
+              [&cands](const PeerContextPtr &p) { cands.push_back(p); },
+              [this, median](const PeerContextPtr &p) {
+                return deliveryRank(p) > median
+                    && dont_bother_until_.find(p) == dont_bother_until_.end();
+              });
+          std::shuffle(cands.begin(), cands.end(), lh_rng_);
+          size_t grafted = 0;
+          for (auto &p : cands) {
+            if (grafted >= 2 || sz + grafted >= config_.D_max) break;
+            log_.info("[lh-mesh] opportunistic graft peer={} first={} lag_ms={} median={} topic={}",
+                      p->str, p->first_msg_deliveries,
+                      static_cast<int64_t>(p->delivery_lag_ewma_ms),
+                      static_cast<int64_t>(median), topic_);
+            addToMesh(p);
+            subscribed_peers_.erase(p->peer_id);
+            ++grafted;
+          }
+        }
+      } else if (sz < mesh_target && curationEnabled()) {
         // Grow toward the spec target D, at most kGraftPerHeartbeat per
         // beat (staggered — hammering GRAFTs draws P7 penalties at
         // remotes), picking the best-ranked deliverers instead of random.
@@ -291,9 +433,11 @@ namespace libp2p::protocol::gossip {
               return a_time < b_time;  // lowest time first
             });
         size_t to_prune = sz - config_.D_max;
-        for (size_t i = 0; i < to_prune && i < all_mesh.size(); ++i) {
+        for (size_t i = 0; i < all_mesh.size() && to_prune > 0; ++i) {
+          if (isPinnedPeer(all_mesh[i])) continue;
           removeFromMesh(all_mesh[i]);
           mesh_peers_.erase(all_mesh[i]->peer_id);
+          --to_prune;
         }
       }
     }
@@ -476,7 +620,10 @@ namespace libp2p::protocol::gossip {
     // skips repair because subscribed_peers_ was also empty when it last ran.
     // BUT: respect the backoff list to avoid BehaviourPenalty from peers
     // who recently pruned us (gossipsub v1.1 anti-flood).
-    if (self_subscribed_ && mesh_peers_.size() < config_.D_min) {
+    if (self_subscribed_ && isBeaconBlockTopicId(topic_) && isPinnedPeer(p)) {
+      log_.info("[golden-peer] force-graft {} topic={}", p->str, topic_);
+      addToMesh(p);
+    } else if (self_subscribed_ && mesh_peers_.size() < config_.D_min) {
       auto it = dont_bother_until_.find(p);
       if (it == dont_bother_until_.end()) {
         addToMesh(p);

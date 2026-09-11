@@ -154,6 +154,16 @@ namespace libp2p::protocol::gossip {
   void Stream::beginWrite(SharedBuffer buffer) {
     assert(buffer);
 
+    // Survive synchronous completion. ASan 2026-09-11 (asan-report.583919):
+    // libp2p::write on an already-closed QUIC stream invokes the completion
+    // INLINE with an error -> onMessageWritten -> feedback_ -> Connectivity
+    // banOrForget -> ctx->outbound_stream.reset() -> *this destroyed while
+    // beginWrite is still on the stack; the timeout_ read below then hit
+    // freed memory, and the pending-queue writes scribbled reused heap —
+    // the process-wide heap-corruption writer behind the 09-10 crashes
+    // (malloc abort in gossip heartbeat, dangling DialerImpl hashtable node).
+    auto self = shared_from_this();
+
     writing_bytes_ = buffer->size();
 
     TRACE("writing {} bytes to {}:{}", writing_bytes_, peer_->str, stream_id_);
@@ -169,6 +179,10 @@ namespace libp2p::protocol::gossip {
           self->onMessageWritten(result);
         });
 
+    if (closed_) {
+      // the synchronous-error path above already tore this stream down
+      return;
+    }
     if (timeout_ > std::chrono::milliseconds::zero()) {
       timeout_handle_ = scheduler_.scheduleWithHandle(
           [self_wptr = weak_from_this(), this] {

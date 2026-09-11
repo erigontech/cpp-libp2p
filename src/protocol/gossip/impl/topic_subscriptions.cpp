@@ -61,7 +61,7 @@ namespace libp2p::protocol::gossip {
       // immediate-IDONTWANT change.
       static const bool on = [] {
         const char *env = std::getenv("SILKWORM_GOSSIP_LH_MESH");
-        return env != nullptr && env[0] == '1';
+        return env == nullptr || env[0] != '0';
       }();
       return on;
     }
@@ -142,8 +142,17 @@ namespace libp2p::protocol::gossip {
     // with 8).
     constexpr size_t kMeshTargetBlock = 8;
     constexpr size_t kGraftPerHeartbeat = 2;
-    // ~60s at the 700ms eth2 heartbeat (LH: opportunistic_graft_ticks=60 at 1s)
-    constexpr uint64_t kOpportunisticGraftTicks = 85;
+    // ~5min at the 700ms eth2 heartbeat. Was ~60s (LH's period), but with
+    // the mesh median pinned by zombie members OG fired every period and
+    // grafted 2/min — telemetry 2026-09-11 showed remotes pruning us at
+    // 2.7/min in response (graft-churn spiral). Zombie eviction below
+    // unpins the median; the longer period ends the flood.
+    constexpr uint64_t kOpportunisticGraftTicks = 428;
+    // A mesh member that has sent NOTHING (no first, no duplicate) for this
+    // long after grafting never actually meshed us back (or is dead weight):
+    // evict it so the slot can go to a deliverer. Zero-traffic-only — a
+    // healthy peer always at least loses races (d>0) and is never touched.
+    constexpr uint64_t kZombieEvictTicks = 260;  // ~3min
     constexpr uint64_t kSwapPeriodBeats = 86;  // ~60s at 700ms heartbeat
     constexpr uint64_t kPruneBackoffSec = 60;
     const Time kPruneBackoff = Time{60'000};
@@ -239,6 +248,7 @@ namespace libp2p::protocol::gossip {
             ctx->message_builder->addIDontWant(msg_id);
           }
           ctx->message_builder->addMessage(*msg, msg_id);
+          ++lh_forwards_;
 
           // forward immediately to those in mesh
           connectivity_.peerIsWritable(ctx, true);
@@ -267,6 +277,14 @@ namespace libp2p::protocol::gossip {
   }
 
   void TopicSubscriptions::onHeartbeat(Time now) {
+    // Per-topic forward-rate telemetry (~1/min): remotes' P3 mesh-delivery
+    // scoring punishes members that do not forward — a subscribed topic
+    // with received traffic but ~0 forwards is a score-poisoning candidate.
+    if (self_subscribed_ && ++lh_fwd_tel_ticks_ % 85 == 0) {
+      log_.info("[fwd-tel] topic={} forwards_1m={} mesh={}",
+                topic_, lh_forwards_, mesh_peers_.size());
+      lh_forwards_ = 0;
+    }
     if (self_subscribed_) {
       log_.debug("heartbeat: topic={} mesh={} subscribed={} backoff={}",
                  topic_, mesh_peers_.size(), subscribed_peers_.size(), dont_bother_until_.size());
@@ -286,15 +304,81 @@ namespace libp2p::protocol::gossip {
       const size_t mesh_limit =
           isBeaconBlockTopicId(topic_) ? 10 : mesh_target + 4;
       if (lhMeshEnabled() && !curationEnabled()) {
-        // --- LH-faithful maintenance (see lhMeshEnabled comment) ---
+        // --- Anti-decay maintenance, lever H (2026-09-11) ---
+        // The refill-to-target variant regressed (see lhMeshEnabled note);
+        // this mode now adds ONLY the two LH mechanisms that counter mesh
+        // decay: opportunistic grafting of above-median deliverers (mesh
+        // floats D_min..D_max) and worst-first trim at D_max with the best
+        // 4 protected. Motivation: paired delta vs LH degraded +348 ->
+        // +604ms p50 over 4.5h of uptime with the default policy — no
+        // eviction pressure means mesh quality decays monotonically.
         ++lh_heartbeat_ticks_;
-        if (sz < mesh_target) {
-          // Refill toward the TARGET with random eligible peers (LH refills
-          // to mesh_n when below mesh_n_low; random, score-agnostic —
-          // explore now, evict at trim time). Staggered like the curation
-          // path to respect remote GRAFT-rate penalties.
+        if (isBeaconBlockTopicId(topic_)
+            && lh_heartbeat_ticks_ % kOpportunisticGraftTicks == 0) {
+          // Decay delivery credit ~5%/min (half-life ~13min). Without decay
+          // first_msg_deliveries is cumulative-forever: stale champions keep
+          // a high deliveryRank, the mesh median always looks healthy, and
+          // the opportunistic-graft trigger below never fires — while the
+          // measured first-arrival drifts +60ms per 30min of uptime
+          // (2026-09-11 buckets: +254 fresh -> +604 at 5h). LH's P2 decays
+          // over 20 epochs for the same reason.
+          const auto decay = [](const PeerContextPtr &p) {
+            p->first_msg_deliveries -= p->first_msg_deliveries / 20;
+          };
+          mesh_peers_.selectAll(decay);
+          subscribed_peers_.selectAll(decay);
+          // Zombie eviction (telemetry 2026-09-11: the same f0:d0 members
+          // occupied 5 of 6 mesh slots for 40+ minutes).
+          {
+            std::vector<PeerContextPtr> zombies;
+            mesh_peers_.selectAll([this, &zombies](const PeerContextPtr &p) {
+              auto &since = lh_mesh_since_tick_[p->peer_id.toBase58()];
+              if (since == 0) {
+                since = lh_heartbeat_ticks_;
+                return;
+              }
+              const bool never_delivered =
+                  p->first_msg_deliveries == 0 && p->dup_msg_deliveries == 0;
+              if (never_delivered
+                  && lh_heartbeat_ticks_ - since >= kZombieEvictTicks) {
+                zombies.push_back(p);
+              }
+            });
+            size_t evicted = 0;
+            for (auto &p : zombies) {
+              if (evicted >= 2) break;
+              log_.info("[mesh-tel] ZOMBIE-EVICT {} (never delivered)", p->str);
+              dont_bother_until_[p] = now + kPruneBackoff;
+              removeFromMesh(p);
+              mesh_peers_.erase(p->peer_id);
+              lh_mesh_since_tick_.erase(p->peer_id.toBase58());
+              ++evicted;
+            }
+          }
+          // Mesh telemetry: one line/min so mesh-quality steps in the
+          // paired-delta curve can be attributed instead of guessed.
+          std::string desc;
+          std::vector<double> tel_ranks;
+          mesh_peers_.selectAll([&desc, &tel_ranks](const PeerContextPtr &p) {
+            tel_ranks.push_back(deliveryRank(p));
+            desc += fmt::format(" {}:f{}:d{}:l{}", p->str, p->first_msg_deliveries,
+                                p->dup_msg_deliveries,
+                                static_cast<int64_t>(p->delivery_lag_ewma_ms));
+          });
+          std::sort(tel_ranks.begin(), tel_ranks.end());
+          const double tel_median = tel_ranks.empty() ? 0.0
+              : (tel_ranks.size() % 2 == 1
+                     ? tel_ranks[tel_ranks.size() / 2]
+                     : (tel_ranks[tel_ranks.size() / 2 - 1] + tel_ranks[tel_ranks.size() / 2]) / 2.0);
+          log_.info("[mesh-tel] size={} median={} subscribed={} prunes_rx={} {}",
+                    tel_ranks.size(), static_cast<int64_t>(tel_median),
+                    subscribed_peers_.size(), lh_prunes_rx_, desc);
+          lh_prunes_rx_ = 0;
+        }
+        if (sz < config_.D_min) {
+          // legacy low-water refill (random, staggered)
           auto peers = subscribed_peers_.selectRandomPeers(
-              std::min(kGraftPerHeartbeat, mesh_target - sz));
+              std::min(kGraftPerHeartbeat, config_.D_min - sz));
           for (auto &p : peers) {
             if (dont_bother_until_.find(p) != dont_bother_until_.end()) {
               continue;
@@ -338,11 +422,22 @@ namespace libp2p::protocol::gossip {
           const double median = ranks.size() % 2 == 1
               ? ranks[ranks.size() / 2]
               : (ranks[ranks.size() / 2 - 1] + ranks[ranks.size() / 2]) / 2.0;
+          // LH fires opportunistic grafting when the MESH median is below an
+          // absolute threshold, then grafts random candidates above the
+          // median (which is then low, so nearly all qualify). The first
+          // port required candidates strictly above a healthy median —
+          // non-mesh peers can rarely earn first-delivery credit, so it
+          // never fired (0 grafts in 1h). Threshold: a healthy mesh member
+          // wins >=2 firsts per window; below that, explore.
+          constexpr double kOGMedianThreshold = 2000.0;
+          if (median >= kOGMedianThreshold) {
+            return;
+          }
           std::vector<PeerContextPtr> cands;
           subscribed_peers_.selectIf(
               [&cands](const PeerContextPtr &p) { cands.push_back(p); },
               [this, median](const PeerContextPtr &p) {
-                return deliveryRank(p) > median
+                return deliveryRank(p) >= median
                     && dont_bother_until_.find(p) == dont_bother_until_.end();
               });
           std::shuffle(cands.begin(), cands.end(), lh_rng_);
@@ -712,6 +807,11 @@ namespace libp2p::protocol::gossip {
   void TopicSubscriptions::onPrune(const PeerContextPtr &p,
                                    Time dont_bother_until) {
     bool was_in_mesh = mesh_peers_.erase(p->peer_id).has_value();
+    if (was_in_mesh) {
+      ++lh_prunes_rx_;
+      log_.info("[mesh-tel] PRUNE-RX from {} (f{} d{}) topic={}",
+                p->str, p->first_msg_deliveries, p->dup_msg_deliveries, topic_);
+    }
     p->mesh_since.erase(topic_);
     if (peer_score_ && was_in_mesh) {
       peer_score_->prune(p->peer_id, topic_);

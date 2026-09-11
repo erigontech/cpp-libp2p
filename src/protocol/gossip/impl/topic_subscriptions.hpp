@@ -103,6 +103,10 @@ namespace libp2p::protocol::gossip {
 
     /// LH-faithful maintenance state (see lhMeshEnabled in the .cpp)
     uint64_t lh_heartbeat_ticks_ = 0;
+    uint64_t lh_prunes_rx_ = 0;
+    std::unordered_map<std::string, uint64_t> lh_mesh_since_tick_;
+    uint64_t lh_forwards_ = 0;
+    uint64_t lh_fwd_tel_ticks_ = 0;
     std::minstd_rand lh_rng_{0x51172};
 
     /// Heartbeat counter for the periodic latency-aware mesh swap

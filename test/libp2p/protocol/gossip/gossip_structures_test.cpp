@@ -154,6 +154,27 @@ TEST(Gossip, PeerSet) {
  * @when We insert messages into it on different timestamp
  * @then We see that all messages are both inserted and expired properly
  */
+/**
+ * @given PeerSet with some peers
+ * @when the selectAll callback removes peers from the same set
+ * @then every peer present at the start is visited once and the set stays valid
+ */
+TEST(Gossip, PeerSetSelectAllToleratesErase) {
+  g::PeerSet peers;
+  const size_t N = 10;
+  for (size_t i = 0; i < N; ++i) {
+    ASSERT_TRUE(
+        peers.insert(std::make_shared<g::PeerContext>(testutil::randomPeerId())));
+  }
+  size_t visited = 0;
+  peers.selectAll([&](const g::PeerContextPtr &ctx) {
+    ++visited;
+    peers.erase(ctx->peer_id);
+  });
+  ASSERT_EQ(visited, N);
+  ASSERT_TRUE(peers.empty());
+}
+
 TEST(Gossip, MessageCache) {
   constexpr g::Time msg_lifetime{20};
   constexpr g::Time timer_interval{msg_lifetime / 2};

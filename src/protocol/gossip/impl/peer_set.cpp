@@ -8,9 +8,12 @@
 
 #include <algorithm>
 #include <chrono>
+#include <iterator>
 #include <random>
+#include <vector>
 
 #include <boost/range/adaptor/filtered.hpp>
+#include <boost/range/algorithm/copy.hpp>
 #include <boost/range/algorithm/for_each.hpp>
 
 namespace libp2p::protocol::gossip {
@@ -69,13 +72,19 @@ namespace libp2p::protocol::gossip {
     return ret;
   }
 
+  // Callbacks may remove peers from this set: a stream write that fails
+  // inline bans its peer (Connectivity::banOrForget) during the iteration
   void PeerSet::selectAll(const SelectCallback &callback) const {
-    boost::for_each(peers_, callback);
+    const std::vector<PeerContextPtr> snapshot{peers_.begin(), peers_.end()};
+    boost::for_each(snapshot, callback);
   }
 
   void PeerSet::selectIf(const SelectCallback &callback,
                          const FilterCallback &filter) const {
-    boost::for_each(peers_ | boost::adaptors::filtered(filter), callback);
+    std::vector<PeerContextPtr> snapshot;
+    boost::copy(peers_ | boost::adaptors::filtered(filter),
+                std::back_inserter(snapshot));
+    boost::for_each(snapshot, callback);
   }
 
   void PeerSet::eraseIf(const FilterCallback &filter) {

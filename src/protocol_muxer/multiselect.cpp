@@ -59,6 +59,11 @@ namespace libp2p::protocol_muxer::multiselect {
     active_instances_.erase(instance);
     if (cache_.size() < kMaxCacheSize) {
       cache_.emplace_back(std::move(instance));
+    } else {
+      // An instance closes from its connection's read/write callbacks: freeing
+      // it here frees that connection inside its own callback (SIGSEGV in
+      // ~MultiselectInstance once more negotiations end than the cache holds)
+      scheduler_->schedule([instance = std::move(instance)] {});
     }
     cb(std::move(result));
   }

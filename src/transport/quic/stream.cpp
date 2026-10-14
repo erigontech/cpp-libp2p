@@ -54,7 +54,18 @@ namespace libp2p::connection {
     if (not stream_ctx_) {
       return cb(r);
     }
+    if (stream_ctx_->writing) {
+      throw std::logic_error{"QuicStream::writeSome already in progress"};
+    }
     auto n = lsquic_stream_write(stream_ctx_->ls_stream, in.data(), in.size());
+    if (n == 0) {
+      // Flow control: the peer's stream or connection window is full. Wait
+      // for on_write instead of failing, which truncated large responses
+      stream_ctx_->writing.emplace(StreamCtx::Writing{in, std::move(cb)});
+      lsquic_stream_wantwrite(stream_ctx_->ls_stream, 1);
+      stream_ctx_->engine->process();
+      return;
+    }
     if (n > 0 and lsquic_stream_flush(stream_ctx_->ls_stream) == 0) {
       r = n;
     }

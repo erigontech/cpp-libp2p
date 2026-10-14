@@ -233,6 +233,7 @@ namespace libp2p::transport::lsquic {
           // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast)
           auto stream_ctx = reinterpret_cast<StreamCtx *>(_stream_ctx);
           auto op = qtils::optionTake(stream_ctx->reading);
+          auto write_op = qtils::optionTake(stream_ctx->writing);
           // Null the QuicStream's ctx BEFORE any app callback: on_close fires
           // from ietf_full_conn_ci_destroy's stream-destroy loop; a synchronous
           // callback that drops the last shared_ptr re-enters
@@ -246,8 +247,38 @@ namespace libp2p::transport::lsquic {
             post(*stream_ctx->engine->io_context_,
                  [cb{std::move(op->cb)}] { cb(QuicError::STREAM_CLOSED); });
           }
+          if (write_op) {
+            post(*stream_ctx->engine->io_context_,
+                 [cb{std::move(write_op->cb)}] {
+                   cb(QuicError::STREAM_CLOSED);
+                 });
+          }
           // NOLINTNEXTLINE(cppcoreguidelines-owning-memory)
           delete stream_ctx;
+        };
+    stream_if.on_write =
+        +[](lsquic_stream_t *stream, lsquic_stream_ctx_t *_stream_ctx) {
+          // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast)
+          auto stream_ctx = reinterpret_cast<StreamCtx *>(_stream_ctx);
+          if (not stream_ctx->writing) {
+            lsquic_stream_wantwrite(stream, 0);
+            return;
+          }
+          auto n = lsquic_stream_write(
+              stream, stream_ctx->writing->in.data(), stream_ctx->writing->in.size());
+          if (n == 0) {
+            // still blocked by flow control: keep waiting
+            return;
+          }
+          lsquic_stream_wantwrite(stream, 0);
+          auto op = qtils::optionTake(stream_ctx->writing).value();
+          outcome::result<size_t> r = QuicError::STREAM_CLOSED;
+          if (n > 0 and lsquic_stream_flush(stream) == 0) {
+            r = n;
+          }
+          // Defer the app callback off the lsquic stack (mirrors on_read).
+          post(*stream_ctx->engine->io_context_,
+               [cb{std::move(op.cb)}, r] { cb(r); });
         };
     stream_if.on_read =
         +[](lsquic_stream_t *stream, lsquic_stream_ctx_t *_stream_ctx) {

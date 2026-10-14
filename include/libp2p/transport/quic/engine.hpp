@@ -87,6 +87,14 @@ namespace libp2p::transport::lsquic {
       std::function<void(outcome::result<size_t>)> cb;
     };
     std::optional<Reading> reading{};
+    /**
+     * Stream write operation arguments, while flow control blocks the write.
+     */
+    struct Writing {
+      BytesIn in;
+      std::function<void(outcome::result<size_t>)> cb;
+    };
+    std::optional<Writing> writing{};
   };
 
   using OnAccept = std::function<void(std::shared_ptr<QuicConnection>)>;

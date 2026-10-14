@@ -49,8 +49,8 @@ namespace libp2p::protocol::gossip {
     // rust-libp2p gossipsub heartbeat (behaviour.rs mesh maintenance +
     // opportunistic_graft): its only slow-member pressure is additive
     // grafting above the mesh median, never periodic rank rotation — the
-    // churn that made the old curation mode regress. Default ON;
-    // SILKWORM_GOSSIP_LH_MESH=0 restores legacy for A/B.
+    // churn that made the old curation mode regress. Default OFF (see below);
+    // SILKWORM_GOSSIP_LH_MESH=1 enables it for A/B.
     bool lhMeshEnabled() {
       // Default OFF: live A/B 2026-09-10 21:10-21:46 (paired vs LH) regressed
       // delta p50 348->445, p90 656->832; the refill-to-8 branch ran every
@@ -61,7 +61,7 @@ namespace libp2p::protocol::gossip {
       // immediate-IDONTWANT change.
       static const bool on = [] {
         const char *env = std::getenv("SILKWORM_GOSSIP_LH_MESH");
-        return env == nullptr || env[0] != '0';
+        return env != nullptr && env[0] == '1';
       }();
       return on;
     }
@@ -741,7 +741,9 @@ namespace libp2p::protocol::gossip {
     if (!res) {
       res = mesh_peers_.erase(p->peer_id);
     }
-    dont_bother_until_.erase(p);
+    // The PRUNE backoff outlives the subscription: the peer context is reused
+    // when the peer reconnects, and a GRAFT before the backoff expires is a
+    // P7 penalty at the remote. Expired entries are dropped by the heartbeat.
   }
 
   void TopicSubscriptions::onGraft(const PeerContextPtr &p) {

@@ -153,6 +153,17 @@ namespace libp2p::protocol::gossip {
 
   void GossipCore::setValidator(const TopicId &topic, Validator validator) {
     assert(validator);
+    setValidator(topic,
+                 [validator{std::move(validator)}](const Bytes &from,
+                                                   const Bytes &data) {
+                   return validator(from, data) ? ValidationResult::kAccept
+                                                : ValidationResult::kReject;
+                 });
+  }
+
+  void GossipCore::setValidator(const TopicId &topic,
+                                TriStateValidator validator) {
+    assert(validator);
     auto sub = subscribe({topic}, [](const SubscriptionData &) {});
     validators_[topic] = {std::move(validator), std::move(sub)};
   }
@@ -423,7 +434,7 @@ namespace libp2p::protocol::gossip {
     log_.debug("MESSAGE arrived from peer {}, topic={}, size={}, msg_id={:x}",
                from->str, msg->topic, msg->data.size(), msg_id);
 
-    if (msg_cache_.contains(msg_id)) {
+    if (msg_cache_.contains(msg_id) || ignored_.contains(msg_id)) {
       // duplicate delivery: measure this peer's lag vs the first copy
       if (isBeaconBlockTopic(msg->topic)) {
         auto it = first_delivery_.find(msg_id);
@@ -444,18 +455,34 @@ namespace libp2p::protocol::gossip {
 
     // validate message. If no validator is set then we
     // suppose that the message is valid (we might not know topic details)
-    bool valid = true;
+    auto validation = ValidationResult::kAccept;
 
     if (!validators_.empty()) {
       auto it = validators_.find(msg->topic);
       if (it != validators_.end()) {
-        valid = it->second.validator(msg->from, msg->data);
+        validation = it->second.validator(msg->from, msg->data);
       }
     }
 
     peer_score2_->validate_message(from->peer_id, msg_id_str, msg->topic,
                                    toScoreTime(scheduler_->now()));
-    if (!valid) {
+    if (validation == ValidationResult::kIgnore) {
+      // rust-libp2p MessageAcceptance::Ignore: neither forwarded nor penalized
+      peer_score2_->reject_message(from->peer_id,
+                                   msg_id_str,
+                                   msg->topic,
+                                   score::RejectReason::kValidationIgnored,
+                                   toScoreTime(scheduler_->now()));
+      ignored_.insert(msg_id);
+      ignored_order_.push_back(msg_id);
+      if (ignored_order_.size() > kMaxIgnoredMessages) {
+        ignored_.erase(ignored_order_.front());
+        ignored_order_.pop_front();
+      }
+      log_.debug("message ignored by validation");
+      return;
+    }
+    if (validation == ValidationResult::kReject) {
       // P4 (InvalidMessageDeliveries): verbatim rust-libp2p semantics — the
       // reject fans out to every peer that delivered this id and the record
       // marks later copies invalid on arrival.

@@ -194,8 +194,29 @@ namespace libp2p::protocol::gossip {
     /// Validator of messages arriving from the wire
     using Validator = std::function<bool(const Bytes &from, const Bytes &data)>;
 
-    /// Sets message validator for topic
+    /// Outcome of the validation of a message arriving from the wire, as in the
+    /// gossipsub spec and rust-libp2p MessageAcceptance
+    enum class ValidationResult {
+      /// valid: deliver and forward
+      kAccept,
+      /// invalid: drop and penalize the sender (P4)
+      kReject,
+      /// drop without penalizing the sender: neither delivered, forwarded nor
+      /// cached for IWANT, and later copies are dropped as duplicates (e.g. an
+      /// equivocating block, or a message outside its propagation window)
+      kIgnore,
+    };
+
+    /// Validator of messages arriving from the wire that can ignore messages
+    using TriStateValidator =
+        std::function<ValidationResult(const Bytes &from, const Bytes &data)>;
+
+    /// Sets message validator for topic: true accepts, false rejects
     virtual void setValidator(const TopicId &topic, Validator validator) = 0;
+
+    /// Sets message validator for topic
+    virtual void setValidator(const TopicId &topic,
+                              TriStateValidator validator) = 0;
 
     /// Creates unique message ID out of message fields
     using MessageIdFn = std::function<Bytes(

@@ -57,6 +57,9 @@ namespace libp2p::protocol::gossip {
     void start() override;
     void stop() override;
     void setValidator(const TopicId &topic, Validator validator) override;
+
+    void setValidator(const TopicId &topic,
+                      TriStateValidator validator) override;
     void setMessageIdFn(MessageIdFn fn) override;
     Subscription subscribe(TopicSet topics,
                            SubscriptionCallback callback) override;
@@ -153,12 +156,18 @@ namespace libp2p::protocol::gossip {
     std::shared_ptr<RemoteSubscriptions> remote_subscriptions_;
 
     struct ValidatorAndLocalSub {
-      Validator validator;
+      TriStateValidator validator;
       Subscription sub;
     };
 
     /// Remote messages validators by topic
     std::unordered_map<TopicId, ValidatorAndLocalSub> validators_;
+
+    /// IDs of the latest messages the validators ignored, so that their copies
+    /// are dropped as duplicates
+    static constexpr size_t kMaxIgnoredMessages = 4096;
+    std::set<MessageId> ignored_;
+    std::deque<MessageId> ignored_order_;
 
     /// Network part of gossip component
     std::shared_ptr<Connectivity> connectivity_;

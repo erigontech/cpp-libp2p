@@ -61,6 +61,11 @@ namespace libp2p::transport::lsquic {
 
     lsquic_engine_settings settings{};
     lsquic_engine_init_settings(&settings, flags);
+    // /quic-v1 is QUIC v1 (RFC 9000). With v2 enabled too, two lsquic engines
+    // stall in the handshake: the server ACKs the first Initial packet in v1,
+    // then switches to v2 from the client's version_information (compatible
+    // version negotiation) after the client settled on v1 from that ACK
+    settings.es_versions = 1u << LSQVER_I001;
     settings.es_init_max_stream_data_bidi_remote =
         mux_config.maximum_window_size;
     settings.es_init_max_stream_data_bidi_local =

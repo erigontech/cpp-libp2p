@@ -265,6 +265,12 @@ namespace libp2p::protocol::gossip {
 
     connectable_peers_.erase(ctx->peer_id);
 
+    if (config_.dial_filter && !config_.dial_filter(ctx->peer_id)) {
+      log_.debug("{} not dialed: refused by the dial filter", ctx->str);
+      banOrForget(ctx);
+      return;
+    }
+
     peer::PeerInfo pi = host_->getPeerRepository().getPeerInfo(ctx->peer_id);
     auto can_connect = host_->connectedness(pi);
 

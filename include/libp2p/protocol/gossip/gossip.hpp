@@ -135,6 +135,13 @@ namespace libp2p::protocol::gossip {
     /// Max number of dial attempts before peer is forgotten
     unsigned max_dial_attempts = 3;
 
+    /// Consulted before every gossip dial: false skips the dial, which counts
+    /// as a failed attempt (the peer is retried after ban_interval_msec and
+    /// forgotten after max_dial_attempts). Lets the application keep the
+    /// peers it banned (e.g. after a Goodbye) from being redialed. Empty: any
+    /// peer may be dialed
+    std::function<bool(const peer::PeerId &)> dial_filter;
+
     /// Expiration of gossip peers' addresses in address repository
     std::chrono::milliseconds address_expiration_msec{std::chrono::hours(1)};
 

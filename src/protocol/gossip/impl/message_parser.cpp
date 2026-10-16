@@ -114,7 +114,7 @@ namespace libp2p::protocol::gossip {
               peer_info.peerid().size()));
           if (peer_id_res) {
             log()->info("PX peer: {}", peer_id_res.value().toBase58());
-            receiver.onPrunePeerExchange(peer_id_res.value());
+            receiver.onPrunePeerExchange(from, peer_id_res.value());
           } else {
             log()->debug("PX peer: invalid peer id ({} bytes)",
                          peer_info.peerid().size());

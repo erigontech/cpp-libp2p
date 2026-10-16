@@ -393,11 +393,21 @@ namespace libp2p::protocol::gossip {
     remote_subscriptions_->onPrune(from, topic, backoff_time);
   }
 
-  void GossipCore::onPrunePeerExchange(const peer::PeerId &peer_id) {
+  void GossipCore::onPrunePeerExchange(const PeerContextPtr &from,
+                                       const peer::PeerId &peer_id) {
     if (!started_) {
       return;
     }
     if (peer_id == local_peer_id_) {
+      return;
+    }
+    // gossipsub v1.1: only the peers exchanged by a well-scored peer are
+    // dialed, so that a misbehaving one cannot steer our connections
+    if (peer_score2_->score(from->peer_id)
+        < score_thresholds2_.accept_px_threshold) {
+      log_.debug("PX: ignoring peer {} from {}, below accept_px_threshold",
+                 peer_id.toBase58(),
+                 from->str);
       return;
     }
     log_.info("PX: adding peer {} from PRUNE peer exchange", peer_id.toBase58());

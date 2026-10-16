@@ -770,28 +770,36 @@ namespace libp2p::protocol::gossip {
       return;
     }
 
-    if (!subscribed_peers_.contains(p->peer_id)) {
-      // subscribe first
-      p->subscribed_to.insert(topic_);
-      onPeerSubscribed(p);
-    }
-
-    if (curationEnabled()) {
-      auto bo = dont_bother_until_.find(p);
-      if (bo != dont_bother_until_.end() && bo->second > scheduler_.now()) {
-        // GRAFT before the backoff we gave them expired: behaviour penalty
-        // (gossipsub v1.1 P7) and refuse.
+    // gossipsub v1.1: refuse a GRAFT inside a backoff (a behaviour penalty,
+    // P7) and one from a peer with a negative score, before the peer is
+    // subscribed (which could graft it right away). The PRUNE announces a
+    // fresh backoff, which the refill respects
+    const auto backoff = dont_bother_until_.find(p);
+    const bool in_backoff = backoff != dont_bother_until_.end()
+                         && backoff->second > scheduler_.now();
+    const bool negative_score =
+        peer_score_ && peer_score_->score(p->peer_id) < 0.0;
+    if (in_backoff || negative_score) {
+      if (in_backoff) {
         p->behaviour_penalty += 1.0;
         if (peer_score_) {
           peer_score_->add_penalty(p->peer_id, 1);
         }
-        log_.info("[mesh-curation] GRAFT within backoff from {} (P7={})",
-                  p->str, p->behaviour_penalty);
-        dont_bother_until_[p] = scheduler_.now() + kPruneBackoff;
-        p->message_builder->addPrune(topic_, kPruneBackoffSec);
-        connectivity_.peerIsWritable(p, true);
-        return;
       }
+      log_.info("refusing GRAFT from peer {} (in backoff={}, negative score={}) for topic {}",
+                p->str, in_backoff, negative_score, topic_);
+      p->subscribed_to.insert(topic_);
+      subscribed_peers_.insert(p);
+      dont_bother_until_[p] = scheduler_.now() + kPruneBackoff;
+      p->message_builder->addPrune(topic_, kPruneBackoffSec);
+      connectivity_.peerIsWritable(p, true);
+      return;
+    }
+
+    if (!subscribed_peers_.contains(p->peer_id)) {
+      // subscribe first
+      p->subscribed_to.insert(topic_);
+      onPeerSubscribed(p);
     }
 
     const size_t graft_limit = curationEnabled() && isBeaconBlockTopicId(topic_)

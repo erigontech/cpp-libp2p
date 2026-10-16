@@ -185,11 +185,36 @@ namespace libp2p::protocol::gossip {
     };
     std::map<MessageId, PendingValidation> pending_validations_;
 
-    /// IDs of the latest messages the validators ignored, so that their copies
-    /// are dropped as duplicates
-    static constexpr size_t kMaxIgnoredMessages = 4096;
-    std::set<MessageId> ignored_;
-    std::deque<MessageId> ignored_order_;
+    /// IDs of the latest messages of a kind, at most kMaxIds of them
+    class RecentIds {
+     public:
+      static constexpr size_t kMaxIds = 4096;
+
+      bool contains(const MessageId &id) const {
+        return ids_.contains(id);
+      }
+
+      void insert(const MessageId &id) {
+        if (!ids_.insert(id).second) {
+          return;
+        }
+        order_.push_back(id);
+        if (order_.size() > kMaxIds) {
+          ids_.erase(order_.front());
+          order_.pop_front();
+        }
+      }
+
+     private:
+      std::set<MessageId> ids_;
+      std::deque<MessageId> order_;
+    };
+
+    /// IDs of the latest messages the validators ignored or rejected, so that
+    /// their copies are dropped as duplicates (and not validated again) and
+    /// not requested with IWANT
+    RecentIds ignored_;
+    RecentIds rejected_;
 
     /// Network part of gossip component
     std::shared_ptr<Connectivity> connectivity_;

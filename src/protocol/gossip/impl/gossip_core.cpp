@@ -295,7 +295,8 @@ namespace libp2p::protocol::gossip {
     log_.info("IHAVE from peer {} for topic {}", from->str, topic);
 
     if (remote_subscriptions_->hasTopic(topic) && !msg_cache_.contains(msg_id)
-        && !pending_validations_.contains(msg_id)) {
+        && !pending_validations_.contains(msg_id) && !ignored_.contains(msg_id)
+        && !rejected_.contains(msg_id)) {
       log_.info("requesting IWANT msg_id={:x} from peer {}", msg_id, from->str);
 
       from->message_builder->addIWant(msg_id);
@@ -443,6 +444,7 @@ namespace libp2p::protocol::gossip {
                from->str, msg->topic, msg->data.size(), msg_id);
 
     if (msg_cache_.contains(msg_id) || ignored_.contains(msg_id)
+        || rejected_.contains(msg_id)
         || pending_validations_.contains(msg_id)) {
       // duplicate delivery: measure this peer's lag vs the first copy
       if (isBeaconBlockTopic(msg->topic)) {
@@ -523,11 +525,6 @@ namespace libp2p::protocol::gossip {
                                    score::RejectReason::kValidationIgnored,
                                    toScoreTime(scheduler_->now()));
       ignored_.insert(msg_id);
-      ignored_order_.push_back(msg_id);
-      if (ignored_order_.size() > kMaxIgnoredMessages) {
-        ignored_.erase(ignored_order_.front());
-        ignored_order_.pop_front();
-      }
       log_.debug("message ignored by validation");
       return;
     }
@@ -539,6 +536,7 @@ namespace libp2p::protocol::gossip {
                                    score::RejectReason::kValidationError,
                                    toScoreTime(scheduler_->now()));
       PeerScorer::recordInvalidMessage(*from, msg->topic);
+      rejected_.insert(msg_id);
       log_.debug("message validation failed (P4 penalty applied to {})",
                  from->str);
       return;

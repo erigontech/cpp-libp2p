@@ -305,6 +305,21 @@ namespace libp2p::protocol::gossip {
         it = (it->second < now) ? dont_bother_until_.erase(it) : std::next(it);
       }
 
+      // gossipsub v1.1: members with a negative score leave the mesh first
+      if (peer_score_) {
+        std::vector<PeerContextPtr> negative;
+        mesh_peers_.selectIf(
+            [&negative](const PeerContextPtr &p) { negative.push_back(p); },
+            [this](const PeerContextPtr &p) {
+              return !isPinnedPeer(p) && peer_score_->score(p->peer_id) < 0.0;
+            });
+        for (const auto &p : negative) {
+          removeFromMesh(p);
+          mesh_peers_.erase(p->peer_id);
+        }
+        sz = mesh_peers_.size();
+      }
+
       const size_t mesh_target =
           isBeaconBlockTopicId(topic_) ? kMeshTargetBlock : kMeshTarget;
       const size_t mesh_limit =
@@ -736,8 +751,10 @@ namespace libp2p::protocol::gossip {
       log_.info("[golden-peer] force-graft {} topic={}", p->str, topic_);
       addToMesh(p);
     } else if (self_subscribed_ && mesh_peers_.size() < config_.D_min) {
+      // not inside a backoff, nor with a negative score, as for the refill
       auto it = dont_bother_until_.find(p);
-      if (it == dont_bother_until_.end()) {
+      if (it == dont_bother_until_.end()
+          && !(peer_score_ && peer_score_->score(p->peer_id) < 0.0)) {
         addToMesh(p);
       } else {
         subscribed_peers_.insert(p);

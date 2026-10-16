@@ -28,6 +28,7 @@ namespace libp2p::protocol::gossip {
                        Connectivity &connectivity,
                        basic::Scheduler &scheduler,
                        std::shared_ptr<score::PeerScore> peer_score,
+                       RouterCounters &counters,
                        log::SubLogger &log);
 
     /// Returns true if no peers subscribed and not self-subscribed and
@@ -82,6 +83,7 @@ namespace libp2p::protocol::gossip {
     Connectivity &connectivity_;
     std::shared_ptr<score::PeerScore> peer_score_;
     basic::Scheduler &scheduler_;
+    RouterCounters &counters_;
 
     /// This host subscribed to this topic or not, this affects mesh behavior
     bool self_subscribed_;

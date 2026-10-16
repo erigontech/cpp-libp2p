@@ -7,6 +7,7 @@
 #include "gossip_core.hpp"
 
 #include <cassert>
+#include <utility>
 
 #include <libp2p/crypto/crypto_provider.hpp>
 #include <libp2p/crypto/key_marshaller.hpp>
@@ -120,7 +121,7 @@ namespace libp2p::protocol::gossip {
     }
 
     remote_subscriptions_ = std::make_shared<RemoteSubscriptions>(
-        config_, *connectivity_, *scheduler_, peer_score2_, log_);
+        config_, *connectivity_, *scheduler_, peer_score2_, counters_, log_);
 
     started_ = true;
 
@@ -174,6 +175,10 @@ namespace libp2p::protocol::gossip {
     assert(validator);
     auto sub = subscribe({topic}, [](const SubscriptionData &) {});
     validators_[topic] = {{}, std::move(validator), std::move(sub)};
+  }
+
+  RouterCounters GossipCore::takeCounters() {
+    return std::exchange(counters_, RouterCounters{});
   }
 
   void GossipCore::setMessageIdFn(MessageIdFn fn) {
@@ -405,6 +410,7 @@ namespace libp2p::protocol::gossip {
     // dialed, so that a misbehaving one cannot steer our connections
     if (peer_score2_->score(from->peer_id)
         < score_thresholds2_.accept_px_threshold) {
+      ++counters_.px_dials_skipped;
       log_.debug("PX: ignoring peer {} from {}, below accept_px_threshold",
                  peer_id.toBase58(),
                  from->str);

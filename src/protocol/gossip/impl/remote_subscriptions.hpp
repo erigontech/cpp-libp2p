@@ -23,6 +23,7 @@ namespace libp2p::protocol::gossip {
                         Connectivity &connectivity,
                         basic::Scheduler &scheduler,
                         std::shared_ptr<score::PeerScore> peer_score,
+                        RouterCounters &counters,
                         log::SubLogger &log);
 
     /// This host subscribes or unsubscribes
@@ -73,6 +74,7 @@ namespace libp2p::protocol::gossip {
     Connectivity &connectivity_;
     basic::Scheduler &scheduler_;
     std::shared_ptr<score::PeerScore> peer_score_;
+    RouterCounters &counters_;
 
     // TODO(artem): bound table size (which may grow!)
     // by removing items not subscribed to locally. LRU(???)

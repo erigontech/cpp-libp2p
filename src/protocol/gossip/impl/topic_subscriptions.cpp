@@ -173,17 +173,20 @@ namespace libp2p::protocol::gossip {
 
   }  // namespace
 
-  TopicSubscriptions::TopicSubscriptions(TopicId topic,
-                                         const Config &config,
-                                         Connectivity &connectivity,
-                                         basic::Scheduler &scheduler,
-                                         std::shared_ptr<score::PeerScore> peer_score,
-                                         log::SubLogger &log)
+  TopicSubscriptions::TopicSubscriptions(
+      TopicId topic,
+      const Config &config,
+      Connectivity &connectivity,
+      basic::Scheduler &scheduler,
+      std::shared_ptr<score::PeerScore> peer_score,
+      RouterCounters &counters,
+      log::SubLogger &log)
       : topic_(std::move(topic)),
         config_(config),
         connectivity_(connectivity),
         scheduler_(scheduler),
         peer_score_(std::move(peer_score)),
+        counters_(counters),
         self_subscribed_(false),
         fanout_period_ends_(0),
         log_(log) {}
@@ -316,6 +319,7 @@ namespace libp2p::protocol::gossip {
         for (const auto &p : negative) {
           removeFromMesh(p);
           mesh_peers_.erase(p->peer_id);
+          ++counters_.negative_score_prunes;
         }
         sz = mesh_peers_.size();
       }
@@ -803,6 +807,8 @@ namespace libp2p::protocol::gossip {
           peer_score_->add_penalty(p->peer_id, 1);
         }
       }
+      ++(in_backoff ? counters_.graft_refusals_in_backoff
+                    : counters_.graft_refusals_negative_score);
       log_.info("refusing GRAFT from peer {} (in backoff={}, negative score={}) for topic {}",
                 p->str, in_backoff, negative_score, topic_);
       p->subscribed_to.insert(topic_);

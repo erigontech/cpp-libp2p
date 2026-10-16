@@ -73,6 +73,7 @@ namespace libp2p::protocol::gossip {
         const TopicId &topic) const override;
     bool graftPeer(const TopicId &topic, const peer::PeerId &peer) override;
     bool prunePeer(const TopicId &topic, const peer::PeerId &peer) override;
+    RouterCounters takeCounters() override;
 
     outcome::result<void> signMessage(TopicMessage &msg) const;
 
@@ -219,6 +220,9 @@ namespace libp2p::protocol::gossip {
 
     /// Network part of gossip component
     std::shared_ptr<Connectivity> connectivity_;
+
+    /// Mesh and peer exchange decisions, since takeCounters()
+    RouterCounters counters_;
 
     /// Local {un}subscribe changes to be broadcasted to peers
     std::map<TopicId, bool> broadcast_on_heartbeat_;

@@ -175,6 +175,19 @@ namespace libp2p::protocol::gossip {
   using TopicList = std::vector<TopicId>;
   using TopicSet = std::set<TopicId>;
 
+  /// What the router decided about meshes and peer exchange, since the
+  /// counters were last taken
+  struct RouterCounters {
+    /// mesh members pruned by the heartbeat for a negative score
+    uint64_t negative_score_prunes = 0;
+    /// GRAFTs refused inside a backoff, and from a peer with a negative score
+    uint64_t graft_refusals_in_backoff = 0;
+    uint64_t graft_refusals_negative_score = 0;
+    /// peers exchanged in a PRUNE not dialed, the pruning peer scoring below
+    /// accept_px_threshold
+    uint64_t px_dials_skipped = 0;
+  };
+
   /// Gossip protocol interface
   class Gossip {
    public:
@@ -293,6 +306,9 @@ namespace libp2p::protocol::gossip {
     /// Application-driven mesh curation: prune a mesh member (sends PRUNE
     /// with backoff). True if pruned.
     virtual bool prunePeer(const TopicId &topic, const peer::PeerId &peer) = 0;
+
+    /// Returns the router counters and resets them (on the gossip thread)
+    virtual RouterCounters takeCounters() = 0;
   };
 
   // Creates Gossip object

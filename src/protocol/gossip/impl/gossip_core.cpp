@@ -489,8 +489,8 @@ namespace libp2p::protocol::gossip {
       return;
     }
     if (pending_validations_.size() >= config_.max_pending_validations) {
-      log_.debug("too many messages pending validation, ignoring");
-      onMessageValidated(from, msg, msg_id, ValidationResult::kIgnore);
+      log_.debug("too many messages pending validation, dropping");
+      onMessageValidated(from, msg, msg_id, ValidationResult::kDrop);
       return;
     }
     // Held until the validator decides: the I/O thread goes on meanwhile
@@ -526,6 +526,11 @@ namespace libp2p::protocol::gossip {
                                       const TopicMessage::Ptr &msg,
                                       const MessageId &msg_id,
                                       ValidationResult validation) {
+    if (validation == ValidationResult::kDrop) {
+      // not judged: neither scored nor remembered, so that a copy is validated
+      log_.debug("message dropped without validation");
+      return;
+    }
     const std::string msg_id_str(msg_id.begin(), msg_id.end());
     if (validation == ValidationResult::kIgnore) {
       // rust-libp2p MessageAcceptance::Ignore: neither forwarded nor penalized

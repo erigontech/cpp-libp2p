@@ -131,7 +131,8 @@ namespace libp2p::protocol::gossip {
     unsigned seen_cache_limit = 100;
 
     /// Messages held at most while asynchronous validators decide on them:
-    /// past that, a message for an asynchronous validator is ignored
+    /// past that, a message for an asynchronous validator is dropped
+    /// (ValidationResult::kDrop)
     size_t max_pending_validations = 4096;
 
     /// Heartbeat interval
@@ -220,6 +221,10 @@ namespace libp2p::protocol::gossip {
       /// cached for IWANT, and later copies are dropped as duplicates (e.g. an
       /// equivocating block, or a message outside its propagation window)
       kIgnore,
+      /// drop without penalizing the sender and without remembering the
+      /// message: a later copy is validated (the validator could not take
+      /// this one, e.g. its queue was full)
+      kDrop,
     };
 
     /// Validator of messages arriving from the wire that can ignore messages

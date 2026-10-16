@@ -43,6 +43,8 @@ namespace libp2p::protocol::gossip {
   struct PeerConnectionInfo {
     /// we dialed one of them
     bool outbound = false;
+    /// their remote IP addresses, for the IP colocation score (P6)
+    std::vector<std::string> ips;
   };
 
   /// Gossip pub-sub protocol config

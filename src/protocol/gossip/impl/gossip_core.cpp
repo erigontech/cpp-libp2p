@@ -685,6 +685,14 @@ namespace libp2p::protocol::gossip {
       peer_score2_->add_peer(ctx->peer_id);
       const auto info = connectionInfo(ctx->peer_id);
       ctx->outbound = info.outbound;
+      // P6 (IP colocation): the peers sharing an IP beyond the threshold are
+      // penalized, except on loopback (local multi-node setups). remove_peer
+      // forgets the IPs of a peer that leaves
+      for (const auto &ip : info.ips) {
+        if (!ip.starts_with("127.") && ip != "::1") {
+          peer_score2_->add_ip(ctx->peer_id, ip);
+        }
+      }
       log_.debug("peer {} connected", ctx->str);
       // notify the new peer about all topics we subscribed to
       if (!local_subscriptions_->subscribedTo().empty()) {
@@ -711,8 +719,18 @@ namespace libp2p::protocol::gossip {
     for (const auto &connection :
          host_->getNetwork().getConnectionManager().getConnectionsToPeer(
              peer)) {
-      if (!connection->isClosed() && connection->isInitiator()) {
-        info.outbound = true;
+      if (connection->isClosed()) {
+        continue;
+      }
+      info.outbound = info.outbound || connection->isInitiator();
+      if (auto address = connection->remoteMultiaddr()) {
+        for (const auto code :
+             {multi::Protocol::Code::IP4, multi::Protocol::Code::IP6}) {
+          if (auto ip = address.value().getFirstValueForProtocol(code)) {
+            info.ips.push_back(std::move(ip.value()));
+            break;
+          }
+        }
       }
     }
     return info;

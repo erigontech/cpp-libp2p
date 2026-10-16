@@ -309,6 +309,14 @@ namespace libp2p::protocol::gossip {
 
     /// Returns the router counters and resets them (on the gossip thread)
     virtual RouterCounters takeCounters() = 0;
+
+    /// Sizes the score parameters of the eth2 topics to the network, as
+    /// Lighthouse does once per epoch: the attestation subnets expect message
+    /// rates from \p active_validators (they are not scored until it is
+    /// known), and penalties wait for \p current_slot to pass their
+    /// activation. Re-installs the parameters of the topics already scored
+    virtual void setNetworkSize(size_t active_validators,
+                                uint64_t current_slot) = 0;
   };
 
   // Creates Gossip object

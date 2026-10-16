@@ -515,4 +515,12 @@ namespace libp2p::protocol::gossip::score {
       size_t mesh_n = 8,
       uint64_t current_slot = UINT64_MAX);
 
+  /// The Lighthouse parameters of an eth2 topic the router scores: the
+  /// beacon_block topic, and the attestation subnets once the network size is
+  /// known (\p active_validators sizes their expected message rates).
+  /// nullopt for the other topics, and for the subnets while
+  /// \p active_validators is 0
+  std::optional<TopicScoreParams> eth2_topic_score_params(
+      const TopicId &topic, size_t active_validators, uint64_t current_slot);
+
 }  // namespace libp2p::protocol::gossip::score

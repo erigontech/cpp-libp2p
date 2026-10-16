@@ -653,23 +653,32 @@ namespace libp2p::protocol::gossip {
   }
 
   void GossipCore::ensureTopicScoreParams(const TopicId &topic) {
-    if (peer_score2_->params().topics.count(topic) != 0) {
+    if (peer_score2_->get_topic_params(topic) != nullptr) {
       return;
     }
-    // Pattern-match eth2 topic names; other topics score only globally.
-    const bool is_block = topic.find("/beacon_block/") != std::string::npos;
-    const bool is_subnet =
-        topic.find("/beacon_attestation_") != std::string::npos;
-    if (!is_block && !is_subnet) {
-      return;
+    // eth2 topics only: the others score only globally
+    if (auto params = score::eth2_topic_score_params(
+            topic, active_validators_, current_slot_)) {
+      peer_score2_->set_topic_params(topic, *params);
+      log_.info("score params installed for {} ({} active validators)",
+                topic,
+                active_validators_);
     }
-    auto tmpl = is_block
-        ? score::lighthouse_mainnet_params(topic, {})
-        : score::lighthouse_mainnet_params("__unused__", {topic});
-    auto it = tmpl.topics.find(topic);
-    if (it != tmpl.topics.end()) {
-      peer_score2_->set_topic_params(topic, it->second);
-      log_.info("score params installed for {}", topic);
+  }
+
+  void GossipCore::setNetworkSize(size_t active_validators,
+                                  uint64_t current_slot) {
+    active_validators_ = active_validators;
+    current_slot_ = current_slot;
+    std::vector<TopicId> scored;
+    for (const auto &[topic, _] : peer_score2_->params().topics) {
+      scored.push_back(topic);
+    }
+    for (const auto &topic : scored) {
+      if (auto params = score::eth2_topic_score_params(
+              topic, active_validators_, current_slot_)) {
+        peer_score2_->set_topic_params(topic, *params);
+      }
     }
   }
 

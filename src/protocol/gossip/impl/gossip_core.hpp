@@ -74,6 +74,8 @@ namespace libp2p::protocol::gossip {
     bool graftPeer(const TopicId &topic, const peer::PeerId &peer) override;
     bool prunePeer(const TopicId &topic, const peer::PeerId &peer) override;
     RouterCounters takeCounters() override;
+    void setNetworkSize(size_t active_validators,
+                        uint64_t current_slot) override;
 
     outcome::result<void> signMessage(TopicMessage &msg) const;
 
@@ -241,6 +243,10 @@ namespace libp2p::protocol::gossip {
     std::shared_ptr<score::PeerScore> peer_score2_;
     score::PeerScoreThresholds score_thresholds2_;
     Time last_score_refresh_{};
+    /// Network size the eth2 topic score parameters are computed for (0:
+    /// unknown, the attestation subnets are not scored)
+    size_t active_validators_ = 0;
+    uint64_t current_slot_ = UINT64_MAX;
     void ensureTopicScoreParams(const TopicId &topic);
 
     /// Peer scorer — decays counters and recomputes cached_score on each
@@ -250,6 +256,12 @@ namespace libp2p::protocol::gossip {
     PeerScorer scorer_;
 
    public:
+    /// The gossipsub v1.1 peer scores (tests and telemetry, on the gossip
+    /// thread)
+    const score::PeerScore &peerScore() const {
+      return *peer_score2_;
+    }
+
     PeerScorer &scorer() { return scorer_; }
     const PeerScorer &scorer() const { return scorer_; }
 

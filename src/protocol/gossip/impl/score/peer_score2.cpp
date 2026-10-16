@@ -1040,4 +1040,28 @@ namespace libp2p::protocol::gossip::score {
     return params;
   }
 
+  std::optional<TopicScoreParams> eth2_topic_score_params(
+      const TopicId &topic, size_t active_validators, uint64_t current_slot) {
+    const bool is_block = topic.find("/beacon_block/") != std::string::npos;
+    const bool is_subnet =
+        topic.find("/beacon_attestation_") != std::string::npos;
+    if (!is_block && !(is_subnet && active_validators > 0)) {
+      return std::nullopt;
+    }
+    const auto params = is_block ? lighthouse_mainnet_params(
+                            topic,
+                            {},
+                            12.0,
+                            std::max<size_t>(active_validators, 1),
+                            8,
+                            current_slot)
+                                 : lighthouse_mainnet_params("__unused__",
+                                                             {topic},
+                                                             12.0,
+                                                             active_validators,
+                                                             8,
+                                                             current_slot);
+    return params.topics.at(topic);
+  }
+
 }  // namespace libp2p::protocol::gossip::score

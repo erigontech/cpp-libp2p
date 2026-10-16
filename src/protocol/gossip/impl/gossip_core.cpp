@@ -65,7 +65,6 @@ namespace libp2p::protocol::gossip {
         )),
         msg_seq_(scheduler_->now().count()),
         heartbeat_timer_(),
-        scorer_(config_.peer_score_params, config_.peer_score_thresholds),
         log_("gossip", "Gossip", local_peer_id_.toBase58().substr(46)) {
     // Verbatim Lighthouse/rust-libp2p scoring. Global params only at
     // construction; per-topic params are installed lazily when topics are
@@ -556,7 +555,6 @@ namespace libp2p::protocol::gossip {
       peer_score2_->reject_message(from->peer_id, msg_id_str, msg->topic,
                                    score::RejectReason::kValidationError,
                                    toScoreTime(scheduler_->now()));
-      PeerScorer::recordInvalidMessage(*from, msg->topic);
       rejected_.insert(msg_id);
       log_.debug("message validation failed (P4 penalty applied to {})",
                  from->str);
@@ -620,26 +618,12 @@ namespace libp2p::protocol::gossip {
     // shift cache
     msg_cache_.shift();
 
-    // Tick the peer scorer once per heartbeat. The scorer applies counter
-    // decay and refreshes PeerContext::cached_score for every connected peer.
-    // Subsequent mesh-selection passes use the cache directly (O(1) lookup).
-    // The internal decay_interval gate inside tick() keeps the work bounded
-    // even at high heartbeat rates.
+    // Decay and refresh the scores once per decay_interval (a slot)
     auto now = scheduler_->now();
-    std::vector<PeerContextPtr> ticked;
-    connectivity_->getConnectedPeers().selectAll(
-        [&ticked](const PeerContextPtr &p) { ticked.push_back(p); });
-    scorer_.tick(now, ticked);
-
-    // Verbatim scorer: decay/refresh once per decay_interval (12s), then
-    // publish scores into PeerContext::cached_score for mesh decisions.
     if (last_score_refresh_ == Time{} ||
         now - last_score_refresh_ >= peer_score2_->params().decay_interval) {
       last_score_refresh_ = now;
       peer_score2_->refresh_scores(toScoreTime(now));
-      for (auto &p : ticked) {
-        p->cached_score = peer_score2_->score(p->peer_id);
-      }
     }
 
     // heartbeat changes per topic

@@ -801,11 +801,8 @@ namespace libp2p::protocol::gossip {
     const bool negative_score =
         peer_score_ && peer_score_->score(p->peer_id) < 0.0;
     if (in_backoff || negative_score) {
-      if (in_backoff) {
-        p->behaviour_penalty += 1.0;
-        if (peer_score_) {
-          peer_score_->add_penalty(p->peer_id, 1);
-        }
+      if (in_backoff && peer_score_) {
+        peer_score_->add_penalty(p->peer_id, 1);
       }
       ++(in_backoff ? counters_.graft_refusals_in_backoff
                     : counters_.graft_refusals_negative_score);

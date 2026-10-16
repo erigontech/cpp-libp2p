@@ -18,7 +18,6 @@
 
 #include "message_cache.hpp"
 #include "message_receiver.hpp"
-#include "peer_scorer.hpp"
 #include "score/peer_score2.hpp"
 #include "peer_set.hpp"
 
@@ -249,11 +248,6 @@ namespace libp2p::protocol::gossip {
     uint64_t current_slot_ = UINT64_MAX;
     void ensureTopicScoreParams(const TopicId &topic);
 
-    /// Peer scorer — decays counters and recomputes cached_score on each
-    /// heartbeat. Provides thresholds for graylist / publish / gossip cutoffs.
-    /// Public accessors are provided so other components (Connectivity,
-    /// TopicSubscriptions, message handlers) can record penalties.
-    PeerScorer scorer_;
 
    public:
     /// The gossipsub v1.1 peer scores (tests and telemetry, on the gossip
@@ -262,8 +256,6 @@ namespace libp2p::protocol::gossip {
       return *peer_score2_;
     }
 
-    PeerScorer &scorer() { return scorer_; }
-    const PeerScorer &scorer() const { return scorer_; }
 
    private:
     /// Logger

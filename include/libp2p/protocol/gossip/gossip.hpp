@@ -38,6 +38,13 @@ namespace libp2p {
 
 namespace libp2p::protocol::gossip {
 
+  /// What the router learns about the connections to a peer when its gossip
+  /// stream opens
+  struct PeerConnectionInfo {
+    /// we dialed one of them
+    bool outbound = false;
+  };
+
   /// Gossip pub-sub protocol config
   struct Config {
     /// Network density factors for gossip meshes: below D_min the heartbeat
@@ -47,6 +54,10 @@ namespace libp2p::protocol::gossip {
     size_t D = 6;
     size_t D_max = 10;
     size_t D_score = 4;
+    /// Outbound quota: the heartbeat keeps at least D_out mesh members whose
+    /// connection we dialed (gossipsub v1.1), so that peers dialing us cannot
+    /// take the whole mesh. Below D_min and at most D/2; 0 disables it
+    size_t D_out = 2;
 
     /// Ideal number of connected peers to support the network
     size_t ideal_connections_num = 100;
@@ -96,6 +107,11 @@ namespace libp2p::protocol::gossip {
     /// peers it banned (e.g. after a Goodbye) from being redialed. Empty: any
     /// peer may be dialed
     std::function<bool(const peer::PeerId &)> dial_filter;
+
+    /// Answers what the router learns about the connections to a peer when
+    /// its gossip stream opens. Empty: taken from the host's connection
+    /// manager
+    std::function<PeerConnectionInfo(const peer::PeerId &)> connection_info;
 
     /// Expiration of gossip peers' addresses in address repository
     std::chrono::milliseconds address_expiration_msec{std::chrono::hours(1)};
@@ -234,6 +250,9 @@ namespace libp2p::protocol::gossip {
     /// addition: these are the peers that actually deliver messages and must
     /// survive connection pruning)
     virtual std::vector<peer::PeerId> getMeshPeers() const = 0;
+
+    /// Gossip peers whose connection we dialed (the outbound quota's peers)
+    virtual std::vector<peer::PeerId> getOutboundPeers() const = 0;
 
     /// Mesh members of one specific topic (application-driven mesh curation)
     virtual std::vector<peer::PeerId> getTopicMeshPeers(

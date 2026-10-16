@@ -46,6 +46,10 @@ namespace libp2p::protocol::gossip {
     /// If true, then outbound connection is in progress
     bool is_connecting = false;
 
+    /// We dialed the connection to the peer (the outbound mesh quota D_out),
+    /// as learned when its gossip stream opened
+    bool outbound = false;
+
     /// Per-topic mesh entry time for P1 (TimeInMesh) scoring
     std::unordered_map<TopicId, Time> mesh_since;
 

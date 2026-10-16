@@ -11,6 +11,7 @@
 
 #include <libp2p/crypto/crypto_provider.hpp>
 #include <libp2p/crypto/key_marshaller.hpp>
+#include <libp2p/network/connection_manager.hpp>
 #include <libp2p/peer/identity_manager.hpp>
 #include <qtils/hex.hpp>
 
@@ -235,6 +236,17 @@ namespace libp2p::protocol::gossip {
     connectivity_->getConnectedPeers().selectAll(
         [&peers](const PeerContextPtr &ctx) {
           if (!ctx->mesh_since.empty()) {
+            peers.push_back(ctx->peer_id);
+          }
+        });
+    return peers;
+  }
+
+  std::vector<peer::PeerId> GossipCore::getOutboundPeers() const {
+    std::vector<peer::PeerId> peers;
+    connectivity_->getConnectedPeers().selectAll(
+        [&peers](const PeerContextPtr &ctx) {
+          if (ctx->outbound) {
             peers.push_back(ctx->peer_id);
           }
         });
@@ -671,6 +683,8 @@ namespace libp2p::protocol::gossip {
 
     if (connected) {
       peer_score2_->add_peer(ctx->peer_id);
+      const auto info = connectionInfo(ctx->peer_id);
+      ctx->outbound = info.outbound;
       log_.debug("peer {} connected", ctx->str);
       // notify the new peer about all topics we subscribed to
       if (!local_subscriptions_->subscribedTo().empty()) {
@@ -682,9 +696,26 @@ namespace libp2p::protocol::gossip {
       }
     } else {
       peer_score2_->remove_peer(ctx->peer_id, toScoreTime(scheduler_->now()));
+      ctx->outbound = false;
       log_.debug("peer {} disconnected", ctx->str);
       remote_subscriptions_->onPeerDisconnected(ctx);
     }
+  }
+
+  PeerConnectionInfo GossipCore::connectionInfo(
+      const peer::PeerId &peer) const {
+    if (config_.connection_info) {
+      return config_.connection_info(peer);
+    }
+    PeerConnectionInfo info;
+    for (const auto &connection :
+         host_->getNetwork().getConnectionManager().getConnectionsToPeer(
+             peer)) {
+      if (!connection->isClosed() && connection->isInitiator()) {
+        info.outbound = true;
+      }
+    }
+    return info;
   }
 
   void GossipCore::onLocalSubscriptionChanged(bool subscribe,

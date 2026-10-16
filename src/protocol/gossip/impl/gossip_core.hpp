@@ -68,6 +68,7 @@ namespace libp2p::protocol::gossip {
 
     std::vector<peer::PeerId> getConnectedPeers() const override;
     std::vector<peer::PeerId> getMeshPeers() const override;
+    std::vector<peer::PeerId> getOutboundPeers() const override;
     std::vector<peer::PeerId> getTopicMeshPeers(
         const TopicId &topic) const override;
     bool graftPeer(const TopicId &topic, const peer::PeerId &peer) override;
@@ -117,6 +118,10 @@ namespace libp2p::protocol::gossip {
 
     /// Remote peer connected or disconnected
     void onPeerConnection(bool connected, const PeerContextPtr &ctx);
+
+    /// What the connections to \p peer tell (Config::connection_info, or the
+    /// host's connection manager)
+    PeerConnectionInfo connectionInfo(const peer::PeerId &peer) const;
 
     void setTimerHeartbeat();
 

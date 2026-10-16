@@ -563,12 +563,73 @@ namespace libp2p::protocol::gossip {
               rng_);
         }
         const size_t keep = std::max(config_.D, config_.D_min);
+        // Outbound quota (as go-libp2p-pubsub): with fewer than D_out outbound
+        // members kept, move the outbound ones to the front, the kept ones
+        // first, then as many of the pruned ones as needed
+        const auto is_outbound = [](const PeerContextPtr &p) {
+          return p->outbound;
+        };
+        const auto kept_outbound = static_cast<size_t>(std::count_if(
+            all_mesh.begin(),
+            all_mesh.begin()
+                + static_cast<ptrdiff_t>(std::min(keep, all_mesh.size())),
+            is_outbound));
+        if (kept_outbound < config_.D_out) {
+          const auto to_front = [&all_mesh](size_t i) {
+            std::rotate(all_mesh.begin(),
+                        all_mesh.begin() + static_cast<ptrdiff_t>(i),
+                        all_mesh.begin() + static_cast<ptrdiff_t>(i + 1));
+          };
+          for (size_t i = 1, left = kept_outbound; i < keep && left > 0; ++i) {
+            if (all_mesh[i]->outbound) {
+              to_front(i);
+              --left;
+            }
+          }
+          for (size_t i = keep, need = config_.D_out - kept_outbound;
+               i < all_mesh.size() && need > 0;
+               ++i) {
+            if (all_mesh[i]->outbound) {
+              to_front(i);
+              --need;
+            }
+          }
+        }
         for (size_t i = keep; i < all_mesh.size(); ++i) {
           if (isPinnedPeer(all_mesh[i])) {
             continue;
           }
           removeFromMesh(all_mesh[i]);
           mesh_peers_.erase(all_mesh[i]->peer_id);
+        }
+      }
+
+      // Outbound quota (gossipsub v1.1): with the mesh at D_lo or more, graft
+      // outbound subscribers until D_out members are outbound
+      if (config_.D_out > 0 && mesh_peers_.size() >= config_.D_min) {
+        size_t outbound = 0;
+        mesh_peers_.selectAll([&outbound](const PeerContextPtr &p) {
+          if (p->outbound) {
+            ++outbound;
+          }
+        });
+        if (outbound < config_.D_out) {
+          std::vector<PeerContextPtr> candidates;
+          subscribed_peers_.selectIf(
+              [&candidates](const PeerContextPtr &p) {
+                candidates.push_back(p);
+              },
+              [this](const PeerContextPtr &p) {
+                return p->outbound && !dont_bother_until_.contains(p)
+                    && (!peer_score_ || peer_score_->score(p->peer_id) >= 0.0);
+              });
+          std::shuffle(candidates.begin(), candidates.end(), rng_);
+          for (size_t i = 0;
+               i < config_.D_out - outbound && i < candidates.size();
+               ++i) {
+            addToMesh(candidates[i]);
+            subscribed_peers_.erase(candidates[i]->peer_id);
+          }
         }
       }
     }
@@ -825,7 +886,10 @@ namespace libp2p::protocol::gossip {
     const size_t graft_limit = curationEnabled() && isBeaconBlockTopicId(topic_)
         ? 10
         : config_.D_max;
-    bool mesh_is_full = (mesh_peers_.size() >= graft_limit);
+    // A peer we dialed is accepted past D_hi, for the outbound quota (as
+    // go-libp2p-pubsub and rust-libp2p)
+    bool mesh_is_full = mesh_peers_.size() >= graft_limit
+                     && !(config_.D_out > 0 && p->outbound);
 
     if (self_subscribed_ && !mesh_is_full) {
       mesh_peers_.insert(p);

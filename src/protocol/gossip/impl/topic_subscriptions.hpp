@@ -109,6 +109,9 @@ namespace libp2p::protocol::gossip {
     uint64_t lh_fwd_tel_ticks_ = 0;
     std::minstd_rand lh_rng_{0x51172};
 
+    /// Random selection of the mesh members to graft and prune
+    std::minstd_rand rng_{std::random_device{}()};
+
     /// Heartbeat counter for the periodic latency-aware mesh swap
     uint64_t heartbeat_count_ = 0;
 

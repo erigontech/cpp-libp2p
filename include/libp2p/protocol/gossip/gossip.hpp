@@ -94,9 +94,13 @@ namespace libp2p::protocol::gossip {
 
   /// Gossip pub-sub protocol config
   struct Config {
-    /// Network density factors for gossip meshes
+    /// Network density factors for gossip meshes: below D_min the heartbeat
+    /// grafts up to D, above D_max it prunes down to D, keeping the D_score
+    /// best-scoring members
     size_t D_min = 5;
+    size_t D = 6;
     size_t D_max = 10;
+    size_t D_score = 4;
 
     /// Ideal number of connected peers to support the network
     size_t ideal_connections_num = 100;

@@ -289,8 +289,10 @@ namespace libp2p::protocol::gossip {
       log_.debug("heartbeat: topic={} mesh={} subscribed={} backoff={}",
                  topic_, mesh_peers_.size(), subscribed_peers_.size(), dont_bother_until_.size());
     }
-    if (self_subscribed_ && !subscribed_peers_.empty()) {
-      // add/remove mesh members according to desired network density D
+    if (self_subscribed_) {
+      // add/remove mesh members according to desired network density D. The
+      // refills find no candidates without subscribers outside the mesh, the
+      // prune above D_max runs all the same
       size_t sz = mesh_peers_.size();
 
       // drop expired backoffs so they stop shadowing candidates
@@ -478,19 +480,21 @@ namespace libp2p::protocol::gossip {
           subscribed_peers_.erase(p->peer_id);
         }
       } else if (sz < config_.D_min) {
-        auto peers = subscribed_peers_.selectRandomPeers(config_.D_min - sz);
-        for (auto &p : peers) {
-          auto it = dont_bother_until_.find(p);
-          if (it != dont_bother_until_.end()) {
-            if (it->second < now) {
-              dont_bother_until_.erase(it);
-            } else {
-              continue;
-            }
-          }
-
-          addToMesh(p);
-          subscribed_peers_.erase(p->peer_id);
+        // gossipsub v1.1: below D_lo, graft up to D in this heartbeat, picking
+        // at random among the subscribers not under PRUNE backoff (the expired
+        // ones were dropped above) and without a negative score
+        std::vector<PeerContextPtr> candidates;
+        subscribed_peers_.selectIf(
+            [&candidates](const PeerContextPtr &p) { candidates.push_back(p); },
+            [this](const PeerContextPtr &p) {
+              return !dont_bother_until_.contains(p)
+                  && (!peer_score_ || peer_score_->score(p->peer_id) >= 0.0);
+            });
+        std::shuffle(candidates.begin(), candidates.end(), rng_);
+        const size_t target = std::max(config_.D, config_.D_min);
+        for (size_t i = 0; i < target - sz && i < candidates.size(); ++i) {
+          addToMesh(candidates[i]);
+          subscribed_peers_.erase(candidates[i]->peer_id);
         }
       } else if (sz > mesh_limit && curationEnabled()) {
         // Prune worst deliverers back to the spec target, never the peers
@@ -517,22 +521,31 @@ namespace libp2p::protocol::gossip {
           mesh_peers_.erase(p->peer_id);
         }
       } else if (sz > config_.D_max) {
-        // Prune lowest-scored peers (P1: TimeInMesh) instead of random
-        auto all_mesh = mesh_peers_.selectRandomPeers(sz);  // get all
-        std::sort(all_mesh.begin(), all_mesh.end(),
-            [this, &now](const PeerContextPtr &a, const PeerContextPtr &b) {
-              auto a_it = a->mesh_since.find(topic_);
-              auto b_it = b->mesh_since.find(topic_);
-              Time a_time = (a_it != a->mesh_since.end()) ? (now - a_it->second) : Time{0};
-              Time b_time = (b_it != b->mesh_since.end()) ? (now - b_it->second) : Time{0};
-              return a_time < b_time;  // lowest time first
-            });
-        size_t to_prune = sz - config_.D_max;
-        for (size_t i = 0; i < all_mesh.size() && to_prune > 0; ++i) {
-          if (isPinnedPeer(all_mesh[i])) continue;
+        // gossipsub v1.1: above D_hi, prune down to D, keeping the D_score
+        // best-scoring members and a random selection of the others
+        auto all_mesh = mesh_peers_.selectRandomPeers(sz);
+        std::shuffle(all_mesh.begin(), all_mesh.end(), rng_);
+        if (peer_score_) {
+          std::stable_sort(
+              all_mesh.begin(),
+              all_mesh.end(),
+              [this](const PeerContextPtr &a, const PeerContextPtr &b) {
+                return peer_score_->score(a->peer_id)
+                     > peer_score_->score(b->peer_id);
+              });
+          std::shuffle(
+              all_mesh.begin()
+                  + static_cast<ptrdiff_t>(std::min(config_.D_score, sz)),
+              all_mesh.end(),
+              rng_);
+        }
+        const size_t keep = std::max(config_.D, config_.D_min);
+        for (size_t i = keep; i < all_mesh.size(); ++i) {
+          if (isPinnedPeer(all_mesh[i])) {
+            continue;
+          }
           removeFromMesh(all_mesh[i]);
           mesh_peers_.erase(all_mesh[i]->peer_id);
-          --to_prune;
         }
       }
     }
@@ -770,6 +783,7 @@ namespace libp2p::protocol::gossip {
         }
         log_.info("[mesh-curation] GRAFT within backoff from {} (P7={})",
                   p->str, p->behaviour_penalty);
+        dont_bother_until_[p] = scheduler_.now() + kPruneBackoff;
         p->message_builder->addPrune(topic_, kPruneBackoffSec);
         connectivity_.peerIsWritable(p, true);
         return;
@@ -801,6 +815,8 @@ namespace libp2p::protocol::gossip {
       // we don't have mesh for the topic or mesh is full
       log_.info("rejecting GRAFT from peer {} (self_sub={}, mesh={}/{}) for topic {}",
                 p->str, self_subscribed_, mesh_peers_.size(), config_.D_max, topic_);
+      // the refill must not GRAFT it inside the backoff the PRUNE announces
+      dont_bother_until_[p] = scheduler_.now() + kPruneBackoff;
       p->message_builder->addPrune(topic_, kPruneBackoffSec);
       connectivity_.peerIsWritable(p, true);
     }
@@ -886,6 +902,9 @@ namespace libp2p::protocol::gossip {
     if (peer_score_) {
       peer_score_->prune(p->peer_id, topic_);
     }
+    // a GRAFT inside the backoff the PRUNE announces is a P7 penalty at the
+    // remote: the refill skips the peer until it expires
+    dont_bother_until_[p] = scheduler_.now() + kPruneBackoff;
     p->message_builder->addPrune(topic_, kPruneBackoffSec);
     connectivity_.peerIsWritable(p, false);
     p->mesh_since.erase(topic_);

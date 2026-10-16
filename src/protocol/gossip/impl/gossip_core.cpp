@@ -147,6 +147,7 @@ namespace libp2p::protocol::gossip {
 
     remote_subscriptions_.reset();
     connectivity_.reset();
+    pending_validations_.clear();
 
     local_subscriptions_->forwardEndOfSubscription();
   }
@@ -165,7 +166,14 @@ namespace libp2p::protocol::gossip {
                                 TriStateValidator validator) {
     assert(validator);
     auto sub = subscribe({topic}, [](const SubscriptionData &) {});
-    validators_[topic] = {std::move(validator), std::move(sub)};
+    validators_[topic] = {std::move(validator), {}, std::move(sub)};
+  }
+
+  void GossipCore::setAsyncValidator(const TopicId &topic,
+                                     AsyncValidator validator) {
+    assert(validator);
+    auto sub = subscribe({topic}, [](const SubscriptionData &) {});
+    validators_[topic] = {{}, std::move(validator), std::move(sub)};
   }
 
   void GossipCore::setMessageIdFn(MessageIdFn fn) {
@@ -286,8 +294,8 @@ namespace libp2p::protocol::gossip {
 
     log_.info("IHAVE from peer {} for topic {}", from->str, topic);
 
-    if (remote_subscriptions_->hasTopic(topic)
-        && !msg_cache_.contains(msg_id)) {
+    if (remote_subscriptions_->hasTopic(topic) && !msg_cache_.contains(msg_id)
+        && !pending_validations_.contains(msg_id)) {
       log_.info("requesting IWANT msg_id={:x} from peer {}", msg_id, from->str);
 
       from->message_builder->addIWant(msg_id);
@@ -434,7 +442,8 @@ namespace libp2p::protocol::gossip {
     log_.debug("MESSAGE arrived from peer {}, topic={}, size={}, msg_id={:x}",
                from->str, msg->topic, msg->data.size(), msg_id);
 
-    if (msg_cache_.contains(msg_id) || ignored_.contains(msg_id)) {
+    if (msg_cache_.contains(msg_id) || ignored_.contains(msg_id)
+        || pending_validations_.contains(msg_id)) {
       // duplicate delivery: measure this peer's lag vs the first copy
       if (isBeaconBlockTopic(msg->topic)) {
         auto it = first_delivery_.find(msg_id);
@@ -455,17 +464,57 @@ namespace libp2p::protocol::gossip {
 
     // validate message. If no validator is set then we
     // suppose that the message is valid (we might not know topic details)
-    auto validation = ValidationResult::kAccept;
-
-    if (!validators_.empty()) {
-      auto it = validators_.find(msg->topic);
-      if (it != validators_.end()) {
-        validation = it->second.validator(msg->from, msg->data);
-      }
+    peer_score2_->validate_message(
+        from->peer_id, msg_id_str, msg->topic, toScoreTime(scheduler_->now()));
+    auto validator = validators_.find(msg->topic);
+    if (validator == validators_.end()) {
+      onMessageValidated(from, msg, msg_id, ValidationResult::kAccept);
+      return;
     }
+    if (!validator->second.async_validator) {
+      onMessageValidated(
+          from, msg, msg_id, validator->second.validator(msg->from, msg->data));
+      return;
+    }
+    if (pending_validations_.size() >= config_.max_pending_validations) {
+      log_.debug("too many messages pending validation, ignoring");
+      onMessageValidated(from, msg, msg_id, ValidationResult::kIgnore);
+      return;
+    }
+    // Held until the validator decides: the I/O thread goes on meanwhile
+    pending_validations_.emplace(msg_id, PendingValidation{from, msg});
+    validator->second.async_validator(
+        msg->from,
+        msg->data,
+        [weak_self = weak_from_this(), msg_id](ValidationResult validation) {
+          if (auto self = weak_self.lock()) {
+            self->onAsyncValidationResult(msg_id, validation);
+          }
+        });
+  }
 
-    peer_score2_->validate_message(from->peer_id, msg_id_str, msg->topic,
-                                   toScoreTime(scheduler_->now()));
+  void GossipCore::onAsyncValidationResult(const MessageId &msg_id,
+                                           ValidationResult validation) {
+    auto it = pending_validations_.find(msg_id);
+    if (it == pending_validations_.end()) {
+      return;
+    }
+    auto pending = std::move(it->second);
+    pending_validations_.erase(it);
+    // we may have left the topic meanwhile
+    if (!started_ || !remote_subscriptions_->hasTopic(pending.msg->topic)) {
+      return;
+    }
+    onMessageValidated(pending.from, pending.msg, msg_id, validation);
+    // the forwards go out now, not with the next message or heartbeat
+    connectivity_->flush();
+  }
+
+  void GossipCore::onMessageValidated(const PeerContextPtr &from,
+                                      const TopicMessage::Ptr &msg,
+                                      const MessageId &msg_id,
+                                      ValidationResult validation) {
+    const std::string msg_id_str(msg_id.begin(), msg_id.end());
     if (validation == ValidationResult::kIgnore) {
       // rust-libp2p MessageAcceptance::Ignore: neither forwarded nor penalized
       peer_score2_->reject_message(from->peer_id,

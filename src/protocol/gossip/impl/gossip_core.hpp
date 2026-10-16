@@ -60,6 +60,8 @@ namespace libp2p::protocol::gossip {
 
     void setValidator(const TopicId &topic,
                       TriStateValidator validator) override;
+    void setAsyncValidator(const TopicId &topic,
+                           AsyncValidator validator) override;
     void setMessageIdFn(MessageIdFn fn) override;
     Subscription subscribe(TopicSet topics,
                            SubscriptionCallback callback) override;
@@ -92,6 +94,17 @@ namespace libp2p::protocol::gossip {
     void onTopicMessage(const PeerContextPtr &from,
                         TopicMessage::Ptr msg) override;
     void onMessageEnd(const PeerContextPtr &from) override;
+
+    /// Applies the outcome of the validation of a message: delivers and
+    /// forwards it, or drops it and scores its sender
+    void onMessageValidated(const PeerContextPtr &from,
+                            const TopicMessage::Ptr &msg,
+                            const MessageId &msg_id,
+                            ValidationResult validation);
+
+    /// Outcome of an asynchronous validation, on the gossip thread
+    void onAsyncValidationResult(const MessageId &msg_id,
+                                 ValidationResult validation);
 
     /// Periodic heartbeat timer fn
     void onHeartbeat();
@@ -157,11 +170,20 @@ namespace libp2p::protocol::gossip {
 
     struct ValidatorAndLocalSub {
       TriStateValidator validator;
+      AsyncValidator async_validator;
       Subscription sub;
     };
 
     /// Remote messages validators by topic
     std::unordered_map<TopicId, ValidatorAndLocalSub> validators_;
+
+    /// Messages held until their asynchronous validators decide, with the
+    /// peer that delivered them first. Later copies are duplicates
+    struct PendingValidation {
+      PeerContextPtr from;
+      TopicMessage::Ptr msg;
+    };
+    std::map<MessageId, PendingValidation> pending_validations_;
 
     /// IDs of the latest messages the validators ignored, so that their copies
     /// are dropped as duplicates

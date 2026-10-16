@@ -218,8 +218,12 @@ namespace libp2p::protocol::gossip {
     // pool forever: live node 2026-09-06 had a peer with 294 first
     // deliveries (21% of all blocks) in neither mesh_peers_ nor
     // subscribed_peers_, while mesh members delivered 11% combined.
+    // A sender that disconnected while its message waited for an asynchronous
+    // validator left its subscriptions: it must not come back as a subscriber.
     if (from.has_value() && !mesh_peers_.contains((*from)->peer_id)
-        && !subscribed_peers_.contains((*from)->peer_id)) {
+        && !subscribed_peers_.contains((*from)->peer_id)
+        && connectivity_.getConnectedPeers().find((*from)->peer_id)
+               == boost::make_optional(*from)) {
       (*from)->subscribed_to.insert(topic_);
       subscribed_peers_.insert(*from);
     }

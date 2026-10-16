@@ -130,6 +130,10 @@ namespace libp2p::protocol::gossip {
     /// Topic's seen cache limit
     unsigned seen_cache_limit = 100;
 
+    /// Messages held at most while asynchronous validators decide on them:
+    /// past that, a message for an asynchronous validator is ignored
+    size_t max_pending_validations = 4096;
+
     /// Heartbeat interval
     std::chrono::milliseconds heartbeat_interval_msec{1000};
 
@@ -228,6 +232,21 @@ namespace libp2p::protocol::gossip {
     /// Sets message validator for topic
     virtual void setValidator(const TopicId &topic,
                               TriStateValidator validator) = 0;
+
+    /// Reports the outcome of an asynchronous validation. It must be called
+    /// once, on the thread the gossip runs on, and may be called before the
+    /// validator returns
+    using ValidationCallback = std::function<void(ValidationResult)>;
+
+    /// Validator that decides later, e.g. on a worker thread (rust-libp2p
+    /// validate_messages + report_message_validation_result): the message is
+    /// held, neither delivered nor forwarded, until \p done reports the outcome
+    using AsyncValidator = std::function<void(
+        const Bytes &from, const Bytes &data, ValidationCallback done)>;
+
+    /// Sets an asynchronous message validator for topic
+    virtual void setAsyncValidator(const TopicId &topic,
+                                   AsyncValidator validator) = 0;
 
     /// Creates unique message ID out of message fields
     using MessageIdFn = std::function<Bytes(

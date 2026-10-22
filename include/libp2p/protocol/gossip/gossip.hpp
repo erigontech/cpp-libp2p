@@ -224,6 +224,16 @@ namespace libp2p::protocol::gossip {
     virtual void setAsyncValidator(const TopicId &topic,
                                    AsyncValidator validator) = 0;
 
+    /// Removes the validator of topic, synchronous or asynchronous, with the
+    /// subscription it holds (silkworm addition): unless another subscription
+    /// holds the topic, the router leaves it and its mesh, and drops its
+    /// messages, those waiting for an asynchronous verdict included
+    virtual void removeValidator(const TopicId &topic) = 0;
+
+    /// Whether the router is subscribed to topic, by a subscription or by a
+    /// validator (silkworm addition)
+    virtual bool isSubscribed(const TopicId &topic) const = 0;
+
     /// Creates unique message ID out of message fields
     using MessageIdFn = std::function<Bytes(
         const Bytes &from, const Bytes &seq, const Bytes &data,

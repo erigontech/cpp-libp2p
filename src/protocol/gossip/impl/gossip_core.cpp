@@ -177,6 +177,21 @@ namespace libp2p::protocol::gossip {
     validators_[topic] = {{}, std::move(validator), std::move(sub)};
   }
 
+  void GossipCore::removeValidator(const TopicId &topic) {
+    auto it = validators_.find(topic);
+    if (it == validators_.end()) {
+      return;
+    }
+    // Out of the map first: the last subscription of the topic leaves it as
+    // it goes, which updates the meshes
+    auto removed = std::move(it->second);
+    validators_.erase(it);
+  }
+
+  bool GossipCore::isSubscribed(const TopicId &topic) const {
+    return local_subscriptions_->subscribedTo().count(topic) != 0;
+  }
+
   RouterCounters GossipCore::takeCounters() {
     return std::exchange(counters_, RouterCounters{});
   }
@@ -310,7 +325,9 @@ namespace libp2p::protocol::gossip {
 
     log_.info("IHAVE from peer {} for topic {}", from->str, topic);
 
-    if (remote_subscriptions_->hasTopic(topic) && !msg_cache_.contains(msg_id)
+    // not for a topic we left
+    if (isSubscribed(topic) && remote_subscriptions_->hasTopic(topic)
+        && !msg_cache_.contains(msg_id)
         && !pending_validations_.contains(msg_id) && !ignored_.contains(msg_id)
         && !rejected_.contains(msg_id)) {
       log_.info("requesting IWANT msg_id={:x} from peer {}", msg_id, from->str);
@@ -448,8 +465,10 @@ namespace libp2p::protocol::gossip {
                                   TopicMessage::Ptr msg) {
     assert(started_);
 
-    // do we need this message?
-    auto subscribed = remote_subscriptions_->hasTopic(msg->topic);
+    // do we need this message? Not on a topic we left: the remote peers still
+    // subscribed to it keep its entry
+    auto subscribed =
+        isSubscribed(msg->topic) && remote_subscriptions_->hasTopic(msg->topic);
     if (!subscribed) {
       // ignore this message
       return;
@@ -531,7 +550,8 @@ namespace libp2p::protocol::gossip {
     auto pending = std::move(it->second);
     pending_validations_.erase(it);
     // we may have left the topic meanwhile
-    if (!started_ || !remote_subscriptions_->hasTopic(pending.msg->topic)) {
+    if (!started_ || !isSubscribed(pending.msg->topic)
+        || !remote_subscriptions_->hasTopic(pending.msg->topic)) {
       return;
     }
     onMessageValidated(pending.from, pending.msg, msg_id, validation);

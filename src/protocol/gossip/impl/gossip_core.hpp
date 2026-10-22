@@ -61,6 +61,8 @@ namespace libp2p::protocol::gossip {
                       TriStateValidator validator) override;
     void setAsyncValidator(const TopicId &topic,
                            AsyncValidator validator) override;
+    void removeValidator(const TopicId &topic) override;
+    bool isSubscribed(const TopicId &topic) const override;
     void setMessageIdFn(MessageIdFn fn) override;
     Subscription subscribe(TopicSet topics,
                            SubscriptionCallback callback) override;

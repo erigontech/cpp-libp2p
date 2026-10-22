@@ -72,6 +72,9 @@ namespace libp2p::protocol::gossip {
     // seen (fork-digest-dependent names), see ensureTopicScoreParams.
     auto params = score::lighthouse_mainnet_params("", {});
     params.topics.clear();
+    params.ip_colocation_factor_whitelist.insert(
+        config_.ip_colocation_whitelist.begin(),
+        config_.ip_colocation_whitelist.end());
     score_thresholds2_ = score::lighthouse_thresholds();
     peer_score2_ = std::make_shared<score::PeerScore>(std::move(params),
                                                      score_thresholds2_);
@@ -132,6 +135,28 @@ namespace libp2p::protocol::gossip {
     setTimerHeartbeat();
 
     connectivity_->start();
+
+    // A later connection may change a peer's direction or IPs (silkworm #84)
+    new_connection_sub_ =
+        host_->getBus()
+            .getChannel<event::network::OnNewConnectionChannel>()
+            .subscribe([weak_self{weak_from_this()}](
+                           const std::weak_ptr<connection::CapableConnection>
+                               &weak_connection) {
+              auto self = weak_self.lock();
+              auto connection = weak_connection.lock();
+              if (!self || !self->started_ || !connection) {
+                return;
+              }
+              auto peer_id = connection->remotePeer();
+              if (!peer_id) {
+                return;
+              }
+              if (auto ctx = self->connectivity_->getConnectedPeers().find(
+                      peer_id.value())) {
+                self->refreshConnectionInfo(ctx.value(), false);
+              }
+            });
   }
 
   void GossipCore::stop() {
@@ -142,6 +167,7 @@ namespace libp2p::protocol::gossip {
     started_ = false;
 
     heartbeat_timer_.reset();
+    new_connection_sub_.unsubscribe();
 
     // it closes all senders and receivers
     connectivity_->stop();
@@ -445,6 +471,14 @@ namespace libp2p::protocol::gossip {
       return;
     }
     log_.info("PX: adding peer {} from PRUNE peer exchange", peer_id.toBase58());
+    // Not an outbound peer once connected (rust-libp2p px_peers)
+    const auto now = scheduler_->now();
+    std::erase_if(px_dialed_, [&](const auto &entry) {
+      return now - entry.second > kPxDialedTtl;
+    });
+    if (px_dialed_.size() < kMaxPxDialed) {
+      px_dialed_.emplace(peer_id, now);
+    }
     addBootstrapPeer(peer_id, boost::none);
   }
 
@@ -658,6 +692,11 @@ namespace libp2p::protocol::gossip {
       peer_score2_->refresh_scores(toScoreTime(now));
     }
 
+    // The close of one of several connections to a peer fires no event
+    if (heartbeat_seq_ % kConnectionInfoSweepHeartbeats == 0) {
+      refreshConnectionInfos();
+    }
+
     // heartbeat changes per topic
     remote_subscriptions_->onHeartbeat();
 
@@ -703,16 +742,11 @@ namespace libp2p::protocol::gossip {
 
     if (connected) {
       peer_score2_->add_peer(ctx->peer_id);
-      const auto info = connectionInfo(ctx->peer_id);
-      ctx->outbound = info.outbound;
-      // P6 (IP colocation): the peers sharing an IP beyond the threshold are
-      // penalized, except on loopback (local multi-node setups). remove_peer
-      // forgets the IPs of a peer that leaves
-      for (const auto &ip : info.ips) {
-        if (!ip.starts_with("127.") && ip != "::1") {
-          peer_score2_->add_ip(ctx->peer_id, ip);
-        }
+      if (auto px = px_dialed_.find(ctx->peer_id); px != px_dialed_.end()) {
+        ctx->px_dialed = true;
+        px_dialed_.erase(px);
       }
+      refreshConnectionInfo(ctx, true);
       log_.debug("peer {} connected", ctx->str);
       // notify the new peer about all topics we subscribed to
       if (!local_subscriptions_->subscribedTo().empty()) {
@@ -725,9 +759,55 @@ namespace libp2p::protocol::gossip {
     } else {
       peer_score2_->remove_peer(ctx->peer_id, toScoreTime(scheduler_->now()));
       ctx->outbound = false;
+      ctx->ips.clear();
       log_.debug("peer {} disconnected", ctx->str);
       remote_subscriptions_->onPeerDisconnected(ctx);
     }
+  }
+
+  void GossipCore::refreshConnectionInfos() {
+    connectivity_->getConnectedPeers().selectAll(
+        [this](const PeerContextPtr &ctx) {
+          refreshConnectionInfo(ctx, false);
+        });
+  }
+
+  void GossipCore::refreshConnectionInfo(const PeerContextPtr &ctx,
+                                         bool connected_now) {
+    const auto info = connectionInfo(ctx->peer_id);
+    const bool outbound = info.outbound && !ctx->px_dialed;
+    if (connected_now && info.outbound && ctx->px_dialed) {
+      ++counters_.px_outbound_excluded;
+    }
+    // P6 (IP colocation): the peers sharing an IP beyond the threshold are
+    // penalized, except on loopback (local multi-node setups). remove_peer
+    // forgets the IPs of a peer that leaves
+    std::set<std::string> ips;
+    for (const auto &ip : info.ips) {
+      if (!ip.starts_with("127.") && ip != "::1") {
+        ips.insert(ip);
+      }
+    }
+    if (!connected_now && (outbound != ctx->outbound || ips != ctx->ips)) {
+      ++counters_.conn_info_updates;
+    }
+    ctx->outbound = outbound;
+    for (const auto &ip : ctx->ips) {
+      if (!ips.contains(ip)) {
+        peer_score2_->remove_ip(ctx->peer_id, ip);
+      }
+    }
+    const auto &whitelist =
+        peer_score2_->params().ip_colocation_factor_whitelist;
+    for (const auto &ip : ips) {
+      if (!ctx->ips.contains(ip)) {
+        peer_score2_->add_ip(ctx->peer_id, ip);
+        if (whitelist.contains(ip)) {
+          ++counters_.p6_whitelisted;
+        }
+      }
+    }
+    ctx->ips = std::move(ips);
   }
 
   PeerConnectionInfo GossipCore::connectionInfo(

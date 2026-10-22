@@ -11,6 +11,7 @@
 #include <map>
 #include <deque>
 #include <set>
+#include <unordered_map>
 
 #include <libp2p/basic/scheduler.hpp>
 #include <libp2p/host/host.hpp>
@@ -172,6 +173,20 @@ namespace libp2p::protocol::gossip {
     /// Heartbeat counter driving the periodic delivery-stats dump
     uint64_t heartbeat_seq_ = 0;
 
+    /// Heartbeats between two refreshes of the connection info of every
+    /// connected peer: the close of one of several connections fires no event
+    static constexpr uint64_t kConnectionInfoSweepHeartbeats = 16;
+    /// Peers dialed from a PRUNE peer exchange, until they connect, at most
+    /// kMaxPxDialed for kPxDialedTtl
+    static constexpr size_t kMaxPxDialed = 256;
+    static constexpr std::chrono::minutes kPxDialedTtl{2};
+    std::unordered_map<peer::PeerId, Time> px_dialed_;
+    /// Subscription to the host's new connections
+    event::Handle new_connection_sub_;
+
+    /// Applies the connections of ctx's peer to its direction and P6 IPs
+    void refreshConnectionInfo(const PeerContextPtr &ctx, bool connected_now);
+
     /// Local subscriptions manager (this host subscribed to topics)
     std::shared_ptr<LocalSubscriptions> local_subscriptions_;
 
@@ -263,6 +278,9 @@ namespace libp2p::protocol::gossip {
       return *peer_score2_;
     }
 
+    /// Refreshes the direction and P6 IPs of every connected peer, as the
+    /// heartbeat does every kConnectionInfoSweepHeartbeats (tests)
+    void refreshConnectionInfos();
 
    private:
     /// Logger

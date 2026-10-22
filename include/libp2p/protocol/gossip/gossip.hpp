@@ -39,7 +39,8 @@ namespace libp2p {
 namespace libp2p::protocol::gossip {
 
   /// What the router learns about the connections to a peer when its gossip
-  /// stream opens
+  /// stream opens, and again when a connection to it opens and every
+  /// kConnectionInfoSweepHeartbeats heartbeats
   struct PeerConnectionInfo {
     /// we dialed one of them
     bool outbound = false;
@@ -115,6 +116,10 @@ namespace libp2p::protocol::gossip {
     /// manager
     std::function<PeerConnectionInfo(const peer::PeerId &)> connection_info;
 
+    /// Remote IPs exempt from the IP colocation score (P6): a devnet or a
+    /// private cluster running many nodes behind one address (silkworm #84)
+    std::vector<std::string> ip_colocation_whitelist;
+
     /// Expiration of gossip peers' addresses in address repository
     std::chrono::milliseconds address_expiration_msec{std::chrono::hours(1)};
 
@@ -144,6 +149,14 @@ namespace libp2p::protocol::gossip {
     /// peers exchanged in a PRUNE not dialed, the pruning peer scoring below
     /// accept_px_threshold
     uint64_t px_dials_skipped = 0;
+    /// peers we dialed from a PRUNE peer exchange, not counted as outbound
+    /// (D_out): a peer exchange can be steered by an attacker
+    uint64_t px_outbound_excluded = 0;
+    /// changes of a connected peer's direction or IPs, learned after its
+    /// gossip stream opened
+    uint64_t conn_info_updates = 0;
+    /// IPs of connected peers exempt from P6 by ip_colocation_whitelist
+    uint64_t p6_whitelisted = 0;
   };
 
   /// Gossip protocol interface

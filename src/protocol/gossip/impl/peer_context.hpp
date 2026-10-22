@@ -47,8 +47,15 @@ namespace libp2p::protocol::gossip {
     bool is_connecting = false;
 
     /// We dialed the connection to the peer (the outbound mesh quota D_out),
-    /// as learned when its gossip stream opened
+    /// unless it was from a peer exchange, see
+    /// GossipCore::refreshConnectionInfo
     bool outbound = false;
+
+    /// We dialed it because a PRUNE peer exchange named it: never outbound
+    bool px_dialed = false;
+
+    /// Its remote IPs known to the IP colocation score (P6)
+    std::set<std::string> ips;
 
     /// Per-topic mesh entry time for P1 (TimeInMesh) scoring
     std::unordered_map<TopicId, Time> mesh_since;

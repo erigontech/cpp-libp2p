@@ -170,6 +170,17 @@ namespace libp2p::protocol::gossip {
     return item->meshMemberIds();
   }
 
+  size_t RemoteSubscriptions::takeSilentMeshMembers(
+      const std::function<bool(const TopicId &)> &which) {
+    size_t silent = 0;
+    for (auto &[topic, subscriptions] : table_) {
+      if (which(topic)) {
+        silent += subscriptions.takeSilentMeshMembers();
+      }
+    }
+    return silent;
+  }
+
   bool RemoteSubscriptions::tryPrune(const TopicId &topic,
                                      const PeerContextPtr &p) {
     auto item = getItem(topic, false);

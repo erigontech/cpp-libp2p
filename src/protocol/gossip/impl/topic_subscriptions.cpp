@@ -923,6 +923,9 @@ namespace libp2p::protocol::gossip {
     bool was_in_mesh = mesh_peers_.erase(p->peer_id).has_value();
     if (was_in_mesh) {
       ++lh_prunes_rx_;
+      if (isBeaconBlockTopicId(topic_)) {
+        ++counters_.block_prunes_received;
+      }
       log_.info("[mesh-tel] PRUNE-RX from {} (f{} d{}) topic={}",
                 p->str, p->first_msg_deliveries, p->dup_msg_deliveries, topic_);
     }
@@ -944,6 +947,22 @@ namespace libp2p::protocol::gossip {
     mesh_peers_.selectAll(
         [&ids](const PeerContextPtr &ctx) { ids.push_back(ctx->peer_id); });
     return ids;
+  }
+
+  size_t TopicSubscriptions::takeSilentMeshMembers() {
+    std::unordered_map<peer::PeerId, uint64_t> deliveries;
+    size_t silent = 0;
+    mesh_peers_.selectAll([&](const PeerContextPtr &p) {
+      const uint64_t delivered =
+          p->first_msg_deliveries + p->dup_msg_deliveries;
+      if (const auto last = silent_check_.find(p->peer_id);
+          last != silent_check_.end() && last->second == delivered) {
+        ++silent;
+      }
+      deliveries.emplace(p->peer_id, delivered);
+    });
+    silent_check_ = std::move(deliveries);
+    return silent;
   }
 
   bool TopicSubscriptions::tryGraft(const PeerContextPtr &p) {
@@ -975,6 +994,9 @@ namespace libp2p::protocol::gossip {
 
   void TopicSubscriptions::addToMesh(const PeerContextPtr &p) {
     assert(p->message_builder);
+    if (isBeaconBlockTopicId(topic_)) {
+      ++counters_.block_grafts_sent;
+    }
 
     if (peer_score_) {
       peer_score_->graft(
@@ -994,6 +1016,9 @@ namespace libp2p::protocol::gossip {
 
   void TopicSubscriptions::removeFromMesh(const PeerContextPtr &p) {
     assert(p->message_builder);
+    if (isBeaconBlockTopicId(topic_)) {
+      ++counters_.block_prunes_sent;
+    }
 
     if (peer_score_) {
       peer_score_->prune(p->peer_id, topic_);

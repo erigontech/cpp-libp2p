@@ -6,6 +6,8 @@
 
 #pragma once
 
+#include <functional>
+
 #include <libp2p/basic/scheduler.hpp>
 #include <libp2p/log/sublogger.hpp>
 
@@ -64,6 +66,10 @@ namespace libp2p::protocol::gossip {
     bool tryGraft(const TopicId &topic, const PeerContextPtr &p);
     bool tryPrune(const TopicId &topic, const PeerContextPtr &p);
     std::vector<peer::PeerId> meshMemberIds(const TopicId &topic);
+
+    /// TopicSubscriptions::takeSilentMeshMembers of the topics \p which picks
+    size_t takeSilentMeshMembers(
+        const std::function<bool(const TopicId &)> &which);
 
    private:
     /// Returns table item, creates a new one if needed

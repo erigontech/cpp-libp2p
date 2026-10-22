@@ -8,6 +8,7 @@
 
 #include <deque>
 #include <random>
+#include <unordered_map>
 
 #include <libp2p/log/sublogger.hpp>
 
@@ -71,6 +72,10 @@ namespace libp2p::protocol::gossip {
     /// Authoritative mesh membership (mesh_peers_) for this topic.
     std::vector<peer::PeerId> meshMemberIds() const;
 
+    /// Mesh members at the previous call and now that delivered no block,
+    /// first nor duplicate, in between (silkworm #149)
+    size_t takeSilentMeshMembers();
+
    private:
     /// Adds a peer to mesh
     void addToMesh(const PeerContextPtr &p);
@@ -84,6 +89,9 @@ namespace libp2p::protocol::gossip {
     std::shared_ptr<score::PeerScore> peer_score_;
     basic::Scheduler &scheduler_;
     RouterCounters &counters_;
+
+    /// Block deliveries of the mesh members at the last takeSilentMeshMembers
+    std::unordered_map<peer::PeerId, uint64_t> silent_check_;
 
     /// This host subscribed to this topic or not, this affects mesh behavior
     bool self_subscribed_;

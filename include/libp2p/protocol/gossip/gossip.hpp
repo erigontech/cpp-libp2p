@@ -157,6 +157,20 @@ namespace libp2p::protocol::gossip {
     uint64_t conn_info_updates = 0;
     /// IPs of connected peers exempt from P6 by ip_colocation_whitelist
     uint64_t p6_whitelisted = 0;
+    /// beacon_block mesh maintenance (silkworm #149). First copies of blocks
+    /// from a member of our mesh, and from any other peer: a pull answering
+    /// our IWANT, or a peer that has us in its mesh but is not in ours
+    uint64_t block_first_from_mesh = 0;
+    uint64_t block_first_from_others = 0;
+    /// IWANTs we sent for blocks
+    uint64_t block_iwants_sent = 0;
+    /// GRAFTs and PRUNEs we sent, and PRUNEs mesh members sent us
+    uint64_t block_grafts_sent = 0;
+    uint64_t block_prunes_sent = 0;
+    uint64_t block_prunes_received = 0;
+    /// Mesh members since the counters were last taken that delivered no
+    /// block since, neither a first copy nor a duplicate
+    uint64_t block_mesh_silent = 0;
   };
 
   /// Gossip protocol interface

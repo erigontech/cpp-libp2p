@@ -6,6 +6,7 @@
 
 #include "gossip_core.hpp"
 
+#include <algorithm>
 #include <cassert>
 #include <utility>
 
@@ -219,6 +220,13 @@ namespace libp2p::protocol::gossip {
   }
 
   RouterCounters GossipCore::takeCounters() {
+    if (remote_subscriptions_) {
+      counters_.block_mesh_silent =
+          remote_subscriptions_->takeSilentMeshMembers(
+              [](const TopicId &topic) {
+                return topic.ends_with("/beacon_block/ssz_snappy");
+              });
+    }
     return std::exchange(counters_, RouterCounters{});
   }
 
@@ -359,6 +367,9 @@ namespace libp2p::protocol::gossip {
       log_.info("requesting IWANT msg_id={:x} from peer {}", msg_id, from->str);
 
       from->message_builder->addIWant(msg_id);
+      if (topic.ends_with("/beacon_block/ssz_snappy")) {
+        ++counters_.block_iwants_sent;
+      }
       // Eager pull for latency-critical sparse topics (eth2 beacon blocks):
       // flush the IWANT immediately, but ONLY for the first advertiser of
       // this msg_id — later IHAVEs for the same id go the lazy heartbeat
@@ -636,6 +647,11 @@ namespace libp2p::protocol::gossip {
 
     if (isBeaconBlockTopic(msg->topic)) {
       ++from->first_msg_deliveries;
+      // Pushed by a mesh member, or pulled (silkworm #149)
+      const auto mesh = remote_subscriptions_->meshMemberIds(msg->topic);
+      ++(std::ranges::find(mesh, from->peer_id) != mesh.end()
+             ? counters_.block_first_from_mesh
+             : counters_.block_first_from_others);
       if (from->delivery_lag_ewma_ms < 0) {
         from->delivery_lag_ewma_ms = 0.0;
       } else {

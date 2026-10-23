@@ -15,6 +15,7 @@
 #include <libp2p/common/types.hpp>
 #include <libp2p/network/network.hpp>
 #include <libp2p/peer/address_repository.hpp>
+#include <libp2p/protocol/identify/agent_versions.hpp>
 #include <libp2p/protocol/identify/utils.hpp>
 
 using libp2p::BytesIn;
@@ -214,6 +215,11 @@ namespace libp2p::protocol {
       addresses.push_back(addr);
     }
     consumeListenAddresses(addresses, peer_id);
+
+    // The client mix of the gossip peers (silkworm #149)
+    if (msg.has_agentversion()) {
+      rememberAgentVersion(peer_id, msg.agentversion());
+    }
 
     signal_identify_received_(peer_id);
   }

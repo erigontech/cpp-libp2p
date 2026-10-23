@@ -8,6 +8,7 @@
 
 #include <chrono>
 #include <functional>
+#include <map>
 #include <set>
 #include <string>
 #include <unordered_map>
@@ -46,6 +47,8 @@ namespace libp2p::protocol::gossip {
     bool outbound = false;
     /// their remote IP addresses, for the IP colocation score (P6)
     std::vector<std::string> ips;
+    /// one of them is QUIC (silkworm #149)
+    bool quic = false;
   };
 
   /// Gossip pub-sub protocol config
@@ -197,6 +200,25 @@ namespace libp2p::protocol::gossip {
     uint64_t envelope_mesh_silent_mute = 0;
     uint64_t envelope_repair_evicted = 0;
     uint64_t envelope_repair_grafted = 0;
+    /// The silent members of each topic: those that sent no RPC at all and
+    /// those that sent some, those that sent IDONTWANT for its messages (we
+    /// are in their mesh), their transport and the direction of their
+    /// connection, our bytes waiting on the stream to them and those without
+    /// one, and the client families of the mute ones (silkworm #149)
+    struct SilentMembers {
+      uint64_t no_rpc = 0;
+      uint64_t control_only = 0;
+      uint64_t idontwant = 0;
+      uint64_t quic = 0;
+      uint64_t tcp = 0;
+      uint64_t in = 0;
+      uint64_t out = 0;
+      uint64_t backlog_bytes = 0;
+      uint64_t no_stream = 0;
+      std::map<std::string, uint64_t> mute_agents;
+    };
+    SilentMembers block_silent;
+    SilentMembers envelope_silent;
   };
 
   /// Gossip protocol interface

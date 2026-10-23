@@ -81,6 +81,12 @@ namespace libp2p::protocol::gossip {
     uint64_t envelope_first_deliveries = 0;
     uint64_t envelope_dup_deliveries = 0;
     uint64_t envelope_ihaves_rx = 0;
+    /// RPC frames read from it, and its IDONTWANTs for the blocks and the
+    /// envelopes we hold; its connection is QUIC (silkworm #149)
+    uint64_t rpcs_rx = 0;
+    uint64_t block_idontwant_rx = 0;
+    uint64_t envelope_idontwant_rx = 0;
+    bool quic = false;
 
     ~PeerContext() = default;
     PeerContext(PeerContext &&) = delete;

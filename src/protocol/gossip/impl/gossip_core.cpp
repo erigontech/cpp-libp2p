@@ -230,6 +230,7 @@ namespace libp2p::protocol::gossip {
       counters_.block_mesh_silent_mute = silence.mute;
       counters_.block_mesh_by_us = silence.by_us;
       counters_.block_mesh_by_them = silence.by_them;
+      counters_.block_silent = silence.members;
       const auto envelope_silence =
           remote_subscriptions_->takeSilentMeshMembers(
               [](const TopicId &topic) {
@@ -238,6 +239,7 @@ namespace libp2p::protocol::gossip {
       counters_.envelope_mesh_silent = envelope_silence.silent;
       counters_.envelope_mesh_silent_announcing = envelope_silence.announcing;
       counters_.envelope_mesh_silent_mute = envelope_silence.mute;
+      counters_.envelope_silent = envelope_silence.members;
     }
     return std::exchange(counters_, RouterCounters{});
   }
@@ -439,6 +441,16 @@ namespace libp2p::protocol::gossip {
     if (++received_total == 1 || received_total % 1000 == 0) {
       log_.info("IDONTWANT flowing: received_total={} (last from {})",
                 received_total, from->str);
+    }
+    // A member sending IDONTWANT for the blocks or envelopes we hold has us
+    // in its mesh (silkworm #149)
+    if (auto msg = msg_cache_.getMessage(msg_id)) {
+      if (msg.value()->topic.ends_with("/beacon_block/ssz_snappy")) {
+        ++from->block_idontwant_rx;
+      } else if (msg.value()->topic.ends_with(
+                     "/execution_payload/ssz_snappy")) {
+        ++from->envelope_idontwant_rx;
+      }
     }
     if (from->dont_want.insert(msg_id).second) {
       from->dont_want_order.push_back(msg_id);
@@ -850,6 +862,7 @@ namespace libp2p::protocol::gossip {
       ++counters_.conn_info_updates;
     }
     ctx->outbound = outbound;
+    ctx->quic = info.quic;
     for (const auto &ip : ctx->ips) {
       if (!ips.contains(ip)) {
         peer_score2_->remove_ip(ctx->peer_id, ip);
@@ -882,6 +895,8 @@ namespace libp2p::protocol::gossip {
       }
       info.outbound = info.outbound || connection->isInitiator();
       if (auto address = connection->remoteMultiaddr()) {
+        info.quic = info.quic
+                 || address.value().hasProtocol(multi::Protocol::Code::QUIC_V1);
         for (const auto code :
              {multi::Protocol::Code::IP4, multi::Protocol::Code::IP6}) {
           if (auto ip = address.value().getFirstValueForProtocol(code)) {

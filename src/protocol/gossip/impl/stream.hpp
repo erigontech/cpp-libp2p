@@ -48,6 +48,11 @@ namespace libp2p::protocol::gossip {
     /// Closes the reader so that it will ignore further bytes from wire
     void close();
 
+    /// Bytes written and waiting to be written (silkworm #149)
+    size_t backlogBytes() const {
+      return writing_bytes_ + pending_bytes_;
+    }
+
    private:
     void onLengthRead(outcome::result<multi::UVarint> varint);
     void onMessageRead(outcome::result<void> res);

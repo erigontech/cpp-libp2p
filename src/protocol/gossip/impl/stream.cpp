@@ -116,6 +116,7 @@ namespace libp2p::protocol::gossip {
       feedback_(peer_, Error::MESSAGE_PARSE_ERROR);
       return;
     }
+    ++peer_->rpcs_rx;
 
     parser.dispatch(peer_, msg_receiver_);
 

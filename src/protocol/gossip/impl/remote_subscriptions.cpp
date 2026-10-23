@@ -181,6 +181,19 @@ namespace libp2p::protocol::gossip {
         total.mute += silence.mute;
         total.by_us += silence.by_us;
         total.by_them += silence.by_them;
+        auto &members = total.members;
+        members.no_rpc += silence.members.no_rpc;
+        members.control_only += silence.members.control_only;
+        members.idontwant += silence.members.idontwant;
+        members.quic += silence.members.quic;
+        members.tcp += silence.members.tcp;
+        members.in += silence.members.in;
+        members.out += silence.members.out;
+        members.backlog_bytes += silence.members.backlog_bytes;
+        members.no_stream += silence.members.no_stream;
+        for (const auto &[agent, count] : silence.members.mute_agents) {
+          members.mute_agents[agent] += count;
+        }
       }
     }
     return total;

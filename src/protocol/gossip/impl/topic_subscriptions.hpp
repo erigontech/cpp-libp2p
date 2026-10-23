@@ -29,6 +29,8 @@ namespace libp2p::protocol::gossip {
     /// members we grafted, members that grafted us
     size_t by_us = 0;
     size_t by_them = 0;
+    /// the silent ones by what they sent, transport, direction and backlog
+    RouterCounters::SilentMembers members;
   };
 
   /// Per-topic subscriptions
@@ -111,6 +113,8 @@ namespace libp2p::protocol::gossip {
       uint64_t delivered = 0;
       uint64_t ihaves = 0;
       uint64_t messages = 0;
+      uint64_t rpcs = 0;
+      uint64_t idontwants = 0;
     };
     std::unordered_map<peer::PeerId, SilentCheck> silent_check_;
 

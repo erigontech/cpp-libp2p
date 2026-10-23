@@ -16,8 +16,11 @@
 #include <algorithm>
 #include <cassert>
 
+#include <libp2p/protocol/identify/agent_versions.hpp>
+
 #include "connectivity.hpp"
 #include "message_builder.hpp"
+#include "stream.hpp"
 
 namespace libp2p::protocol::gossip {
 
@@ -120,16 +123,19 @@ namespace libp2p::protocol::gossip {
       uint64_t firsts = 0;
       uint64_t delivered = 0;
       uint64_t ihaves = 0;
+      uint64_t idontwants = 0;
     };
     TopicDeliveries topicDeliveries(bool envelope, const PeerContextPtr &p) {
       if (envelope) {
         return {p->envelope_first_deliveries,
                 p->envelope_first_deliveries + p->envelope_dup_deliveries,
-                p->envelope_ihaves_rx};
+                p->envelope_ihaves_rx,
+                p->envelope_idontwant_rx};
       }
       return {p->first_msg_deliveries,
               p->first_msg_deliveries + p->dup_msg_deliveries,
-              p->block_ihaves_rx};
+              p->block_ihaves_rx,
+              p->block_idontwant_rx};
     }
 
     // Higher is better: first deliveries dominate, duplicate-lag EWMA breaks
@@ -1094,18 +1100,39 @@ namespace libp2p::protocol::gossip {
     MeshSilence silence;
     mesh_peers_.selectAll([&](const PeerContextPtr &p) {
       const auto deliveries = topicDeliveries(envelope, p);
-      const SilentCheck now{
-          deliveries.delivered, deliveries.ihaves, p->messages_rx};
+      const SilentCheck now{deliveries.delivered,
+                            deliveries.ihaves,
+                            p->messages_rx,
+                            p->rpcs_rx,
+                            deliveries.idontwants};
       if (const auto last = silent_check_.find(p->peer_id);
           last != silent_check_.end()
           && last->second.delivered == now.delivered) {
         ++silence.silent;
         // Announcing messages without pushing them: it does not count us in its
         // mesh. Sending nothing at all: its stream to us carries nothing
+        bool mute = false;
         if (now.ihaves != last->second.ihaves) {
           ++silence.announcing;
         } else if (now.messages == last->second.messages) {
           ++silence.mute;
+          mute = true;
+        }
+        auto &members = silence.members;
+        ++(now.rpcs == last->second.rpcs ? members.no_rpc
+                                         : members.control_only);
+        if (now.idontwants != last->second.idontwants) {
+          ++members.idontwant;
+        }
+        ++(p->quic ? members.quic : members.tcp);
+        ++(p->outbound ? members.out : members.in);
+        if (p->outbound_stream) {
+          members.backlog_bytes += p->outbound_stream->backlogBytes();
+        } else {
+          ++members.no_stream;
+        }
+        if (mute) {
+          ++members.mute_agents[agentFamilyOf(p->peer_id)];
         }
       }
       checks.emplace(p->peer_id, now);

@@ -176,15 +176,24 @@ namespace libp2p::protocol::gossip {
     messages_added_.insert(msg_id);
 
     auto *dst = pb_msg_->add_publish();
-    dst->set_from(msg.from.data(), msg.from.size());
+    // Only the author fields the message has: in proto2 an empty field set is
+    // still present on the wire, and the StrictNoSign (eth2) receivers reject
+    // a message with any of them as invalid, rust-libp2p's Anonymous mode and
+    // go-libp2p-pubsub alike. Every forward and IWANT response cost us P4 at
+    // Lighthouse and Caplin, which graylisted us within minutes (silkworm #149)
+    if (!msg.from.empty()) {
+      dst->set_from(msg.from.data(), msg.from.size());
+    }
     dst->set_data(msg.data.data(), msg.data.size());
-    dst->set_seqno(msg.seq_no.data(), msg.seq_no.size());
+    if (!msg.seq_no.empty()) {
+      dst->set_seqno(msg.seq_no.data(), msg.seq_no.size());
+    }
     dst->set_topic(msg.topic);
-    if (msg.signature) {
+    if (msg.signature && !msg.signature->empty()) {
       dst->set_signature(msg.signature.value().data(),
                          msg.signature.value().size());
     }
-    if (msg.key) {
+    if (msg.key && !msg.key->empty()) {
       dst->set_key(msg.key.value().data(), msg.key.value().size());
     }
     empty_ = false;

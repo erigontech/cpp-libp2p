@@ -98,6 +98,10 @@ namespace libp2p::protocol::gossip {
     /// Puts \p p in backoff until \p until, or later if it already is
     void setBackoff(const PeerContextPtr &p, Time until);
 
+    /// \p p is in the silence backoff of a repair eviction, which the refills
+    /// skip; counts the skip
+    bool skipSilenced(const PeerContextPtr &p);
+
     /// Adds a peer to mesh
     void addToMesh(const PeerContextPtr &p);
 
@@ -136,6 +140,13 @@ namespace libp2p::protocol::gossip {
     uint64_t repair_pass_ = 0;
     std::unordered_map<peer::PeerId, RepairMember> repair_members_;
     std::unordered_map<peer::PeerId, uint64_t> repair_firsts_;
+    /// The members repairMesh evicted for silence: the end of the backoff in
+    /// which the refills skip them, and how many times they were evicted
+    struct SilenceBackoff {
+      Time until{};
+      uint64_t evictions = 0;
+    };
+    std::unordered_map<peer::PeerId, SilenceBackoff> silence_backoff_;
 
     /// This host subscribed to this topic or not, this affects mesh behavior
     bool self_subscribed_;

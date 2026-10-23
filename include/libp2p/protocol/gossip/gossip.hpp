@@ -233,6 +233,11 @@ namespace libp2p::protocol::gossip {
     uint64_t envelope_forward_ms_sum = 0;
     uint64_t envelope_forward_ms_max = 0;
     uint64_t envelope_forwarded_to = 0;
+    /// Subscribers the refills of beacon_block and execution_payload (D_lo,
+    /// outbound quota, on subscription) passed over because the mesh repair
+    /// evicted them for silence lately, one per peer and refill: the refill
+    /// below D_lo runs at each heartbeat while the mesh is below (silkworm #162)
+    uint64_t refill_skipped_silent = 0;
   };
 
   /// Gossip protocol interface

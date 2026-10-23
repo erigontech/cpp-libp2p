@@ -195,6 +195,16 @@ namespace libp2p::protocol::gossip {
     constexpr size_t kRepairMaxEvict = 2;
     constexpr size_t kRepairMaxGraft = 2;
     constexpr uint64_t kRepairMinFirsts = 3;
+    // A member evicted for silence stays out of the refills (D_lo, outbound
+    // quota, on subscription) for 10 min, 30 min when evicted again less than
+    // an hour after its last silence backoff ended (silkworm #162: with the
+    // PRUNE backoff alone the refill grafted the mute peers back a minute
+    // later, and they kept the mesh at D_lo). Local only: the PRUNE announces
+    // the usual backoff, a GRAFT after it is accepted. The repair's graft of
+    // first deliverers ignores it: a first copy is what the backoff waits for
+    const Time kSilenceBackoffFirst = Time{600'000};
+    const Time kSilenceBackoffRepeat = Time{1'800'000};
+    const Time kSilenceBackoffMemory = Time{3'600'000};
     constexpr uint64_t kPruneBackoffSec = 60;
     const Time kPruneBackoff = Time{60'000};
   }  // namespace
@@ -355,6 +365,9 @@ namespace libp2p::protocol::gossip {
       }
       std::erase_if(remote_backoff_until_,
                     [now](const auto &entry) { return entry.second < now; });
+      std::erase_if(silence_backoff_, [now](const auto &entry) {
+        return entry.second.until + kSilenceBackoffMemory < now;
+      });
 
       // gossipsub v1.1: members with a negative score leave the mesh first
       if (peer_score_) {
@@ -566,7 +579,8 @@ namespace libp2p::protocol::gossip {
             [&candidates](const PeerContextPtr &p) { candidates.push_back(p); },
             [this](const PeerContextPtr &p) {
               return !dont_bother_until_.contains(p)
-                  && (!peer_score_ || peer_score_->score(p->peer_id) >= 0.0);
+                  && (!peer_score_ || peer_score_->score(p->peer_id) >= 0.0)
+                  && !skipSilenced(p);
             });
         std::shuffle(candidates.begin(), candidates.end(), rng_);
         const size_t target = std::max(config_.D, config_.D_min);
@@ -676,7 +690,8 @@ namespace libp2p::protocol::gossip {
               },
               [this](const PeerContextPtr &p) {
                 return p->outbound && !dont_bother_until_.contains(p)
-                    && (!peer_score_ || peer_score_->score(p->peer_id) >= 0.0);
+                    && (!peer_score_ || peer_score_->score(p->peer_id) >= 0.0)
+                    && !skipSilenced(p);
               });
           std::shuffle(candidates.begin(), candidates.end(), rng_);
           for (size_t i = 0;
@@ -871,10 +886,12 @@ namespace libp2p::protocol::gossip {
       log_.info("[golden-peer] force-graft {} topic={}", p->str, topic_);
       addToMesh(p);
     } else if (self_subscribed_ && mesh_peers_.size() < config_.D_min) {
-      // not inside a backoff, nor with a negative score, as for the refill
+      // not inside a backoff, nor with a negative score, nor evicted for
+      // silence lately, as for the refill
       auto it = dont_bother_until_.find(p);
       if (it == dont_bother_until_.end()
-          && !(peer_score_ && peer_score_->score(p->peer_id) < 0.0)) {
+          && !(peer_score_ && peer_score_->score(p->peer_id) < 0.0)
+          && !skipSilenced(p)) {
         addToMesh(p);
       } else {
         subscribed_peers_.insert(p);
@@ -1026,18 +1043,24 @@ namespace libp2p::protocol::gossip {
       return last == repair_firsts_.end() ? uint64_t{0} : now - last->second;
     };
 
-    // Members that delivered no message since a pass first saw them
+    // Members that delivered no message since the pass that first saw them,
+    // or the last one that saw them deliver
     std::unordered_map<peer::PeerId, RepairMember> members;
     std::vector<PeerContextPtr> silent;
     uint64_t mesh_firsts = 0;
     mesh_peers_.selectAll([&](const PeerContextPtr &p) {
       const uint64_t delivered = topicDeliveries(envelope, p).delivered;
       const auto known = repair_members_.find(p->peer_id);
-      const RepairMember member = known != repair_members_.end()
-                                    ? known->second
-                                    : RepairMember{repair_pass_, delivered};
+      RepairMember member = known != repair_members_.end()
+                              ? known->second
+                              : RepairMember{repair_pass_, delivered};
+      if (delivered != member.delivered) {
+        // It delivered since the last pass: silent from this one on, so one
+        // delivery does not keep a member that went mute afterwards
+        member = RepairMember{repair_pass_, delivered};
+      }
       if (repair_pass_ - member.since_pass >= kRepairSilentPasses
-          && delivered == member.delivered && !isPinnedPeer(p)) {
+          && !isPinnedPeer(p)) {
         silent.push_back(p);
       }
       members.emplace(p->peer_id, member);
@@ -1045,10 +1068,20 @@ namespace libp2p::protocol::gossip {
     });
     for (size_t i = 0; i < silent.size() && i < kRepairMaxEvict; ++i) {
       const auto &p = silent[i];
-      log_.info("[mesh-repair] evict {}: no message since grafted, topic={}",
-                p->str,
-                topic_);
-      // A PRUNE with backoff: it goes back among the subscribers
+      // A PRUNE with backoff: it goes back among the subscribers, which the
+      // refills skip for the silence backoff
+      auto [backoff, first] = silence_backoff_.try_emplace(p->peer_id);
+      const Time silence = first ? kSilenceBackoffFirst : kSilenceBackoffRepeat;
+      backoff->second.until = scheduler_.now() + silence;
+      ++backoff->second.evictions;
+      log_.info(
+          "[mesh-repair] evict {}: no message for {} passes, silence backoff "
+          "{} s (eviction {}), topic={}",
+          p->str,
+          kRepairSilentPasses,
+          silence.count() / 1000,
+          backoff->second.evictions,
+          topic_);
       removeFromMesh(p);
       mesh_peers_.erase(p->peer_id);
       members.erase(p->peer_id);
@@ -1191,6 +1224,16 @@ namespace libp2p::protocol::gossip {
     if (!inserted && it->second < until) {
       it->second = until;
     }
+  }
+
+  bool TopicSubscriptions::skipSilenced(const PeerContextPtr &p) {
+    const auto backoff = silence_backoff_.find(p->peer_id);
+    if (backoff == silence_backoff_.end()
+        || backoff->second.until <= scheduler_.now()) {
+      return false;
+    }
+    ++counters_.refill_skipped_silent;
+    return true;
   }
 
   void TopicSubscriptions::addToMesh(const PeerContextPtr &p) {

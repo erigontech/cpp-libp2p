@@ -172,6 +172,10 @@ namespace libp2p::protocol::gossip {
     /// The same for the execution payload envelopes (silkworm #149)
     std::map<MessageId, PeerContextPtr> first_envelope_delivery_;
     std::deque<MessageId> first_envelope_order_;
+    /// When the first copy of the last blocks and envelopes arrived, for the
+    /// forward delay (silkworm #149)
+    std::map<MessageId, Time> first_seen_at_;
+    std::deque<MessageId> first_seen_order_;
 
     /// Heartbeat counter driving the periodic delivery-stats dump
     uint64_t heartbeat_seq_ = 0;

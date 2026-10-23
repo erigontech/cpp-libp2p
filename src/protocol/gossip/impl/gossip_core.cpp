@@ -596,6 +596,18 @@ namespace libp2p::protocol::gossip {
       return;
     }
 
+    // The first copy of a block or envelope: its forward delay is measured
+    // from now (silkworm #149)
+    if (isBeaconBlockTopic(msg->topic) || isEnvelopeTopic(msg->topic)) {
+      if (first_seen_at_.emplace(msg_id, scheduler_->now()).second) {
+        first_seen_order_.push_back(msg_id);
+        if (first_seen_order_.size() > 128) {
+          first_seen_at_.erase(first_seen_order_.front());
+          first_seen_order_.pop_front();
+        }
+      }
+    }
+
     // validate message. If no validator is set then we
     // suppose that the message is valid (we might not know topic details)
     peer_score2_->validate_message(
@@ -722,6 +734,21 @@ namespace libp2p::protocol::gossip {
     }
 
     log_.debug("forwarding message");
+
+    if (const auto seen = first_seen_at_.find(msg_id);
+        seen != first_seen_at_.end()) {
+      const auto ms = static_cast<uint64_t>(
+          std::max<int64_t>(0, (scheduler_->now() - seen->second).count()));
+      const bool block = isBeaconBlockTopic(msg->topic);
+      ++(block ? counters_.block_forward_count
+               : counters_.envelope_forward_count);
+      (block ? counters_.block_forward_ms_sum
+             : counters_.envelope_forward_ms_sum) += ms;
+      auto &max_ms = block ? counters_.block_forward_ms_max
+                           : counters_.envelope_forward_ms_max;
+      max_ms = std::max(max_ms, ms);
+      first_seen_at_.erase(seen);
+    }
 
     local_subscriptions_->forwardMessage(msg, from->str);
     remote_subscriptions_->onNewMessage(from, msg, msg_id);

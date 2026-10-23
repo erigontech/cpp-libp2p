@@ -95,6 +95,9 @@ namespace libp2p::protocol::gossip {
     /// Config::mesh_repair, once every kRepairTicks heartbeats
     void repairMesh();
 
+    /// Puts \p p in backoff until \p until, or later if it already is
+    void setBackoff(const PeerContextPtr &p, Time until);
+
     /// Adds a peer to mesh
     void addToMesh(const PeerContextPtr &p);
 
@@ -127,6 +130,8 @@ namespace libp2p::protocol::gossip {
     };
     /// Mesh members we grafted, the others grafted us
     std::unordered_map<peer::PeerId, bool> joined_by_us_;
+    /// End of the backoff each peer's last PRUNE announced (silkworm #149)
+    std::unordered_map<peer::PeerId, Time> remote_backoff_until_;
     uint64_t repair_ticks_ = 0;
     uint64_t repair_pass_ = 0;
     std::unordered_map<peer::PeerId, RepairMember> repair_members_;

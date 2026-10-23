@@ -297,6 +297,11 @@ namespace libp2p::protocol::gossip {
           }
           ctx->message_builder->addMessage(*msg, msg_id);
           ++lh_forwards_;
+          if (isBeaconBlockTopicId(topic_)) {
+            ++counters_.block_forwarded_to;
+          } else if (isEnvelopeTopicId(topic_)) {
+            ++counters_.envelope_forwarded_to;
+          }
 
           // forward immediately to those in mesh
           connectivity_.peerIsWritable(ctx, true);
@@ -348,6 +353,8 @@ namespace libp2p::protocol::gossip {
            it != dont_bother_until_.end();) {
         it = (it->second < now) ? dont_bother_until_.erase(it) : std::next(it);
       }
+      std::erase_if(remote_backoff_until_,
+                    [now](const auto &entry) { return entry.second < now; });
 
       // gossipsub v1.1: members with a negative score leave the mesh first
       if (peer_score_) {
@@ -421,7 +428,7 @@ namespace libp2p::protocol::gossip {
             for (auto &p : zombies) {
               if (evicted >= 2) break;
               log_.info("[mesh-tel] ZOMBIE-EVICT {} (never delivered)", p->str);
-              dont_bother_until_[p] = now + kPruneBackoff;
+              setBackoff(p, now + kPruneBackoff);
               removeFromMesh(p);
               mesh_peers_.erase(p->peer_id);
               lh_mesh_since_tick_.erase(p->peer_id.toBase58());
@@ -477,7 +484,7 @@ namespace libp2p::protocol::gossip {
           to_prune = std::min(to_prune, evictable);
           for (size_t i = 0; i < to_prune; ++i) {
             auto &p = all_mesh[i];
-            dont_bother_until_[p] = now + kPruneBackoff;
+            setBackoff(p, now + kPruneBackoff);
             removeFromMesh(p);
             mesh_peers_.erase(p->peer_id);
           }
@@ -587,7 +594,7 @@ namespace libp2p::protocol::gossip {
           log_.info("[mesh-curation] prune peer={} first={} lag_ms={} topic={}",
                     p->str, p->first_msg_deliveries,
                     static_cast<int64_t>(p->delivery_lag_ewma_ms), topic_);
-          dont_bother_until_[p] = now + kPruneBackoff;
+          setBackoff(p, now + kPruneBackoff);
           removeFromMesh(p);
           mesh_peers_.erase(p->peer_id);
         }
@@ -799,7 +806,7 @@ namespace libp2p::protocol::gossip {
             static_cast<int64_t>(worst->delivery_lag_ewma_ms), best->str,
             best->first_msg_deliveries,
             static_cast<int64_t>(best->delivery_lag_ewma_ms));
-        dont_bother_until_[worst] = now + kPruneBackoff;
+        setBackoff(worst, now + kPruneBackoff);
         removeFromMesh(worst);
         mesh_peers_.erase(worst->peer_id);
         addToMesh(best);
@@ -919,7 +926,7 @@ namespace libp2p::protocol::gossip {
                 p->str, in_backoff, negative_score, topic_);
       p->subscribed_to.insert(topic_);
       subscribed_peers_.insert(p);
-      dont_bother_until_[p] = scheduler_.now() + kPruneBackoff;
+      setBackoff(p, scheduler_.now() + kPruneBackoff);
       p->message_builder->addPrune(topic_, kPruneBackoffSec);
       connectivity_.peerIsWritable(p, true);
       return;
@@ -963,7 +970,7 @@ namespace libp2p::protocol::gossip {
       log_.info("rejecting GRAFT from peer {} (self_sub={}, mesh={}/{}) for topic {}",
                 p->str, self_subscribed_, mesh_peers_.size(), config_.D_max, topic_);
       // the refill must not GRAFT it inside the backoff the PRUNE announces
-      dont_bother_until_[p] = scheduler_.now() + kPruneBackoff;
+      setBackoff(p, scheduler_.now() + kPruneBackoff);
       p->message_builder->addPrune(topic_, kPruneBackoffSec);
       connectivity_.peerIsWritable(p, true);
     }
@@ -971,6 +978,9 @@ namespace libp2p::protocol::gossip {
 
   void TopicSubscriptions::onPrune(const PeerContextPtr &p,
                                    Time dont_bother_until) {
+    // A GRAFT before this ends costs us a behaviour penalty (P7) at the peer
+    auto &remote_backoff = remote_backoff_until_[p->peer_id];
+    remote_backoff = std::max(remote_backoff, dont_bother_until);
     bool was_in_mesh = mesh_peers_.erase(p->peer_id).has_value();
     if (was_in_mesh) {
       ++lh_prunes_rx_;
@@ -986,7 +996,7 @@ namespace libp2p::protocol::gossip {
     }
     if (p->subscribed_to.count(topic_) != 0) {
       subscribed_peers_.insert(p);
-      dont_bother_until_.insert({p, dont_bother_until});
+      setBackoff(p, dont_bother_until);
     }
     log_.info("onPrune: peer {} was_in_mesh={} (mesh={}, subscribed={}, backoff_until={}ms) for topic {}",
               p->str, was_in_mesh, mesh_peers_.size(), subscribed_peers_.size(),
@@ -1175,8 +1185,21 @@ namespace libp2p::protocol::gossip {
     return true;
   }
 
+  void TopicSubscriptions::setBackoff(const PeerContextPtr &p, Time until) {
+    // Never cut a backoff short: the one a PRUNE announces may be the longer
+    auto [it, inserted] = dont_bother_until_.try_emplace(p, until);
+    if (!inserted && it->second < until) {
+      it->second = until;
+    }
+  }
+
   void TopicSubscriptions::addToMesh(const PeerContextPtr &p) {
     assert(p->message_builder);
+    if (const auto backoff = remote_backoff_until_.find(p->peer_id);
+        backoff != remote_backoff_until_.end()
+        && scheduler_.now() < backoff->second) {
+      ++counters_.graft_backoff_violations;
+    }
     if (isBeaconBlockTopicId(topic_)) {
       ++counters_.block_grafts_sent;
     }
@@ -1211,7 +1234,7 @@ namespace libp2p::protocol::gossip {
     }
     // a GRAFT inside the backoff the PRUNE announces is a P7 penalty at the
     // remote: the refill skips the peer until it expires
-    dont_bother_until_[p] = scheduler_.now() + kPruneBackoff;
+    setBackoff(p, scheduler_.now() + kPruneBackoff);
     p->message_builder->addPrune(topic_, kPruneBackoffSec);
     connectivity_.peerIsWritable(p, false);
     p->mesh_since.erase(topic_);

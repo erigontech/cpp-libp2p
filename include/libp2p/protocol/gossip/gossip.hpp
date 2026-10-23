@@ -219,6 +219,20 @@ namespace libp2p::protocol::gossip {
     };
     SilentMembers block_silent;
     SilentMembers envelope_silent;
+    /// GRAFTs we sent inside the backoff the peer's PRUNE announced, each a
+    /// behaviour penalty (P7) there (silkworm #149)
+    uint64_t graft_backoff_violations = 0;
+    /// Blocks and envelopes forwarded: how many, the sum and the maximum of
+    /// the delay from their first copy to the forward (the validation), and
+    /// the copies sent to mesh members
+    uint64_t block_forward_count = 0;
+    uint64_t block_forward_ms_sum = 0;
+    uint64_t block_forward_ms_max = 0;
+    uint64_t block_forwarded_to = 0;
+    uint64_t envelope_forward_count = 0;
+    uint64_t envelope_forward_ms_sum = 0;
+    uint64_t envelope_forward_ms_max = 0;
+    uint64_t envelope_forwarded_to = 0;
   };
 
   /// Gossip protocol interface

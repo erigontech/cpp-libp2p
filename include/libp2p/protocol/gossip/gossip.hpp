@@ -120,6 +120,13 @@ namespace libp2p::protocol::gossip {
     /// private cluster running many nodes behind one address (silkworm #84)
     std::vector<std::string> ip_colocation_whitelist;
 
+    /// Mesh repair of the beacon_block and execution_payload topics (silkworm
+    /// #149): about once a minute, evict the members that delivered no message
+    /// of the topic for 3 minutes and, while most first copies come from
+    /// outside the mesh, graft the best non-mesh first deliverers. A mesh at
+    /// D_lo is otherwise never refreshed
+    bool mesh_repair = false;
+
     /// Expiration of gossip peers' addresses in address repository
     std::chrono::milliseconds address_expiration_msec{std::chrono::hours(1)};
 
@@ -171,6 +178,25 @@ namespace libp2p::protocol::gossip {
     /// Mesh members since the counters were last taken that delivered no
     /// block since, neither a first copy nor a duplicate
     uint64_t block_mesh_silent = 0;
+    /// Of those, the ones that announced blocks with IHAVEs meanwhile, which
+    /// do not count us in their mesh, and the ones that sent us nothing
+    uint64_t block_mesh_silent_announcing = 0;
+    uint64_t block_mesh_silent_mute = 0;
+    /// Mesh members we grafted, and those that grafted us
+    uint64_t block_mesh_by_us = 0;
+    uint64_t block_mesh_by_them = 0;
+    /// Config::mesh_repair: silent members evicted, first deliverers grafted
+    uint64_t block_repair_evicted = 0;
+    uint64_t block_repair_grafted = 0;
+    /// The execution_payload topic (envelopes): first copies from mesh members
+    /// and other peers, silent members (announcing, mute), and its repairs
+    uint64_t envelope_first_from_mesh = 0;
+    uint64_t envelope_first_from_others = 0;
+    uint64_t envelope_mesh_silent = 0;
+    uint64_t envelope_mesh_silent_announcing = 0;
+    uint64_t envelope_mesh_silent_mute = 0;
+    uint64_t envelope_repair_evicted = 0;
+    uint64_t envelope_repair_grafted = 0;
   };
 
   /// Gossip protocol interface

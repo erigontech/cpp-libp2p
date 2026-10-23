@@ -19,6 +19,18 @@ namespace libp2p::protocol::gossip {
 
   class Connectivity;
 
+  /// Silent members of a mesh, see TopicSubscriptions::takeSilentMeshMembers
+  struct MeshSilence {
+    size_t silent = 0;
+    /// silent ones that announced messages with IHAVEs meanwhile
+    size_t announcing = 0;
+    /// silent ones that sent us nothing at all meanwhile
+    size_t mute = 0;
+    /// members we grafted, members that grafted us
+    size_t by_us = 0;
+    size_t by_them = 0;
+  };
+
   /// Per-topic subscriptions
   class TopicSubscriptions {
    public:
@@ -72,11 +84,15 @@ namespace libp2p::protocol::gossip {
     /// Authoritative mesh membership (mesh_peers_) for this topic.
     std::vector<peer::PeerId> meshMemberIds() const;
 
-    /// Mesh members at the previous call and now that delivered no block,
-    /// first nor duplicate, in between (silkworm #149)
-    size_t takeSilentMeshMembers();
+    /// Mesh members at the previous call and now that delivered no envelope on
+    /// execution_payload, no block elsewhere, first nor duplicate, in between
+    /// (silkworm #149)
+    MeshSilence takeSilentMeshMembers();
 
    private:
+    /// Config::mesh_repair, once every kRepairTicks heartbeats
+    void repairMesh();
+
     /// Adds a peer to mesh
     void addToMesh(const PeerContextPtr &p);
 
@@ -90,8 +106,27 @@ namespace libp2p::protocol::gossip {
     basic::Scheduler &scheduler_;
     RouterCounters &counters_;
 
-    /// Block deliveries of the mesh members at the last takeSilentMeshMembers
-    std::unordered_map<peer::PeerId, uint64_t> silent_check_;
+    /// What the mesh members had sent us at the last takeSilentMeshMembers
+    struct SilentCheck {
+      uint64_t delivered = 0;
+      uint64_t ihaves = 0;
+      uint64_t messages = 0;
+    };
+    std::unordered_map<peer::PeerId, SilentCheck> silent_check_;
+
+    /// repairMesh: heartbeats, passes, each member's deliveries
+    /// when a pass first saw it in the mesh, and each peer's first deliveries
+    /// at the last pass
+    struct RepairMember {
+      uint64_t since_pass = 0;
+      uint64_t delivered = 0;
+    };
+    /// Mesh members we grafted, the others grafted us
+    std::unordered_map<peer::PeerId, bool> joined_by_us_;
+    uint64_t repair_ticks_ = 0;
+    uint64_t repair_pass_ = 0;
+    std::unordered_map<peer::PeerId, RepairMember> repair_members_;
+    std::unordered_map<peer::PeerId, uint64_t> repair_firsts_;
 
     /// This host subscribed to this topic or not, this affects mesh behavior
     bool self_subscribed_;

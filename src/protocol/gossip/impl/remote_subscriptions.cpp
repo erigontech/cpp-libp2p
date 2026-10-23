@@ -170,15 +170,20 @@ namespace libp2p::protocol::gossip {
     return item->meshMemberIds();
   }
 
-  size_t RemoteSubscriptions::takeSilentMeshMembers(
+  MeshSilence RemoteSubscriptions::takeSilentMeshMembers(
       const std::function<bool(const TopicId &)> &which) {
-    size_t silent = 0;
+    MeshSilence total;
     for (auto &[topic, subscriptions] : table_) {
       if (which(topic)) {
-        silent += subscriptions.takeSilentMeshMembers();
+        const auto silence = subscriptions.takeSilentMeshMembers();
+        total.silent += silence.silent;
+        total.announcing += silence.announcing;
+        total.mute += silence.mute;
+        total.by_us += silence.by_us;
+        total.by_them += silence.by_them;
       }
     }
-    return silent;
+    return total;
   }
 
   bool RemoteSubscriptions::tryPrune(const TopicId &topic,

@@ -68,7 +68,7 @@ namespace libp2p::protocol::gossip {
     std::vector<peer::PeerId> meshMemberIds(const TopicId &topic);
 
     /// TopicSubscriptions::takeSilentMeshMembers of the topics \p which picks
-    size_t takeSilentMeshMembers(
+    MeshSilence takeSilentMeshMembers(
         const std::function<bool(const TopicId &)> &which);
 
    private:

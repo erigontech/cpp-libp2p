@@ -110,6 +110,28 @@ namespace libp2p::protocol::gossip {
           && std::equal(kSuffix.rbegin(), kSuffix.rend(), topic.rbegin());
     }
 
+    bool isEnvelopeTopicId(const TopicId &topic) {
+      return topic.ends_with("/execution_payload/ssz_snappy");
+    }
+
+    // A peer's first copies, all copies and IHAVEs of the messages of the
+    // beacon_block or execution_payload topic (silkworm #149)
+    struct TopicDeliveries {
+      uint64_t firsts = 0;
+      uint64_t delivered = 0;
+      uint64_t ihaves = 0;
+    };
+    TopicDeliveries topicDeliveries(bool envelope, const PeerContextPtr &p) {
+      if (envelope) {
+        return {p->envelope_first_deliveries,
+                p->envelope_first_deliveries + p->envelope_dup_deliveries,
+                p->envelope_ihaves_rx};
+      }
+      return {p->first_msg_deliveries,
+              p->first_msg_deliveries + p->dup_msg_deliveries,
+              p->block_ihaves_rx};
+    }
+
     // Higher is better: first deliveries dominate, duplicate-lag EWMA breaks
     // ties; unknown lag (-1, no sample yet) is treated as a neutral 1500ms.
     double deliveryRank(const PeerContextPtr &p) {
@@ -154,6 +176,19 @@ namespace libp2p::protocol::gossip {
     // healthy peer always at least loses races (d>0) and is never touched.
     constexpr uint64_t kZombieEvictTicks = 260;  // ~3min
     constexpr uint64_t kSwapPeriodBeats = 86;  // ~60s at 700ms heartbeat
+    // Mesh repair of beacon_block and execution_payload (silkworm #149): a
+    // pass every ~60 s; members that delivered no message of the topic, first
+    // nor duplicate, over 3 passes are evicted, at most 2 a pass; while under
+    // half of the pass's first copies came from the mesh (of at least 3), at
+    // most 2 of the best non-mesh first deliverers are grafted. No refill to D:
+    // the members that deliver are never touched (curation churned them,
+    // 2026-09-09) and the mesh grows only toward peers that deliver first
+    // (D_min=8 doubled the p90, 2026-09-10)
+    constexpr uint64_t kRepairTicks = 86;
+    constexpr uint64_t kRepairSilentPasses = 3;
+    constexpr size_t kRepairMaxEvict = 2;
+    constexpr size_t kRepairMaxGraft = 2;
+    constexpr uint64_t kRepairMinFirsts = 3;
     constexpr uint64_t kPruneBackoffSec = 60;
     const Time kPruneBackoff = Time{60'000};
   }  // namespace
@@ -321,6 +356,13 @@ namespace libp2p::protocol::gossip {
           mesh_peers_.erase(p->peer_id);
           ++counters_.negative_score_prunes;
         }
+        sz = mesh_peers_.size();
+      }
+
+      if (config_.mesh_repair
+          && (isBeaconBlockTopicId(topic_) || isEnvelopeTopicId(topic_))
+          && !lhMeshEnabled() && !curationEnabled()) {
+        repairMesh();
         sz = mesh_peers_.size();
       }
 
@@ -905,6 +947,9 @@ namespace libp2p::protocol::gossip {
             score::TimePoint{std::chrono::duration_cast<std::chrono::nanoseconds>(
                 scheduler_.now())});
       }
+      if (isBeaconBlockTopicId(topic_) || isEnvelopeTopicId(topic_)) {
+        joined_by_us_[p->peer_id] = false;
+      }
       log_.info("accepted GRAFT from peer {} (mesh size={}) for topic {}",
                 p->str, mesh_peers_.size(), topic_);
     } else {
@@ -949,20 +994,131 @@ namespace libp2p::protocol::gossip {
     return ids;
   }
 
-  size_t TopicSubscriptions::takeSilentMeshMembers() {
-    std::unordered_map<peer::PeerId, uint64_t> deliveries;
-    size_t silent = 0;
+  void TopicSubscriptions::repairMesh() {
+    if (++repair_ticks_ % kRepairTicks != 0) {
+      return;
+    }
+    ++repair_pass_;
+    const bool envelope = isEnvelopeTopicId(topic_);
+    // First copies since the last pass, from mesh members and from others;
+    // a peer seen for the first time counts from now
+    std::unordered_map<peer::PeerId, uint64_t> firsts;
+    const auto firsts_since = [&](const PeerContextPtr &p) {
+      const uint64_t now = topicDeliveries(envelope, p).firsts;
+      firsts.emplace(p->peer_id, now);
+      const auto last = repair_firsts_.find(p->peer_id);
+      return last == repair_firsts_.end() ? uint64_t{0} : now - last->second;
+    };
+
+    // Members that delivered no message since a pass first saw them
+    std::unordered_map<peer::PeerId, RepairMember> members;
+    std::vector<PeerContextPtr> silent;
+    uint64_t mesh_firsts = 0;
     mesh_peers_.selectAll([&](const PeerContextPtr &p) {
-      const uint64_t delivered =
-          p->first_msg_deliveries + p->dup_msg_deliveries;
-      if (const auto last = silent_check_.find(p->peer_id);
-          last != silent_check_.end() && last->second == delivered) {
-        ++silent;
+      const uint64_t delivered = topicDeliveries(envelope, p).delivered;
+      const auto known = repair_members_.find(p->peer_id);
+      const RepairMember member = known != repair_members_.end()
+                                    ? known->second
+                                    : RepairMember{repair_pass_, delivered};
+      if (repair_pass_ - member.since_pass >= kRepairSilentPasses
+          && delivered == member.delivered && !isPinnedPeer(p)) {
+        silent.push_back(p);
       }
-      deliveries.emplace(p->peer_id, delivered);
+      members.emplace(p->peer_id, member);
+      mesh_firsts += firsts_since(p);
     });
-    silent_check_ = std::move(deliveries);
-    return silent;
+    for (size_t i = 0; i < silent.size() && i < kRepairMaxEvict; ++i) {
+      const auto &p = silent[i];
+      log_.info("[mesh-repair] evict {}: no message since grafted, topic={}",
+                p->str,
+                topic_);
+      // A PRUNE with backoff: it goes back among the subscribers
+      removeFromMesh(p);
+      mesh_peers_.erase(p->peer_id);
+      members.erase(p->peer_id);
+      ++(envelope ? counters_.envelope_repair_evicted
+                  : counters_.block_repair_evicted);
+    }
+    repair_members_ = std::move(members);
+
+    // The non-mesh peers that delivered first copies, best first
+    std::vector<std::pair<uint64_t, PeerContextPtr>> deliverers;
+    uint64_t other_firsts = 0;
+    subscribed_peers_.selectAll([&](const PeerContextPtr &p) {
+      const uint64_t since = firsts_since(p);
+      other_firsts += since;
+      if (since > 0 && !dont_bother_until_.contains(p)
+          && !(peer_score_ && peer_score_->score(p->peer_id) < 0.0)) {
+        deliverers.emplace_back(since, p);
+      }
+    });
+    repair_firsts_ = std::move(firsts);
+    const uint64_t total = mesh_firsts + other_firsts;
+    if (total < kRepairMinFirsts || 2 * mesh_firsts >= total) {
+      return;
+    }
+    // Ties: the block delivery rank, on both topics
+    std::stable_sort(
+        deliverers.begin(), deliverers.end(), [](const auto &a, const auto &b) {
+          return a.first != b.first
+                   ? a.first > b.first
+                   : deliveryRank(a.second) > deliveryRank(b.second);
+        });
+    size_t grafted = 0;
+    for (const auto &[since, p] : deliverers) {
+      if (grafted == kRepairMaxGraft || mesh_peers_.size() >= config_.D_max) {
+        break;
+      }
+      log_.info(
+          "[mesh-repair] graft {}: {} of the last {} first copies, {} from the "
+          "mesh, topic={}",
+          p->str,
+          since,
+          total,
+          mesh_firsts,
+          topic_);
+      subscribed_peers_.erase(p->peer_id);
+      addToMesh(p);
+      repair_members_.emplace(
+          p->peer_id,
+          RepairMember{repair_pass_, topicDeliveries(envelope, p).delivered});
+      ++grafted;
+      ++(envelope ? counters_.envelope_repair_grafted
+                  : counters_.block_repair_grafted);
+    }
+  }
+
+  MeshSilence TopicSubscriptions::takeSilentMeshMembers() {
+    const bool envelope = isEnvelopeTopicId(topic_);
+    std::unordered_map<peer::PeerId, SilentCheck> checks;
+    MeshSilence silence;
+    mesh_peers_.selectAll([&](const PeerContextPtr &p) {
+      const auto deliveries = topicDeliveries(envelope, p);
+      const SilentCheck now{
+          deliveries.delivered, deliveries.ihaves, p->messages_rx};
+      if (const auto last = silent_check_.find(p->peer_id);
+          last != silent_check_.end()
+          && last->second.delivered == now.delivered) {
+        ++silence.silent;
+        // Announcing messages without pushing them: it does not count us in its
+        // mesh. Sending nothing at all: its stream to us carries nothing
+        if (now.ihaves != last->second.ihaves) {
+          ++silence.announcing;
+        } else if (now.messages == last->second.messages) {
+          ++silence.mute;
+        }
+      }
+      checks.emplace(p->peer_id, now);
+      if (const auto joined = joined_by_us_.find(p->peer_id);
+          joined != joined_by_us_.end()) {
+        ++(joined->second ? silence.by_us : silence.by_them);
+      }
+    });
+    silent_check_ = std::move(checks);
+    std::erase_if(joined_by_us_, [this](const auto &entry) {
+      return !mesh_peers_.contains(entry.first);
+    });
+    return silence;
   }
 
   bool TopicSubscriptions::tryGraft(const PeerContextPtr &p) {
@@ -996,6 +1152,9 @@ namespace libp2p::protocol::gossip {
     assert(p->message_builder);
     if (isBeaconBlockTopicId(topic_)) {
       ++counters_.block_grafts_sent;
+    }
+    if (isBeaconBlockTopicId(topic_) || isEnvelopeTopicId(topic_)) {
+      joined_by_us_[p->peer_id] = true;
     }
 
     if (peer_score_) {

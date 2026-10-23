@@ -221,11 +221,23 @@ namespace libp2p::protocol::gossip {
 
   RouterCounters GossipCore::takeCounters() {
     if (remote_subscriptions_) {
-      counters_.block_mesh_silent =
+      const auto silence = remote_subscriptions_->takeSilentMeshMembers(
+          [](const TopicId &topic) {
+            return topic.ends_with("/beacon_block/ssz_snappy");
+          });
+      counters_.block_mesh_silent = silence.silent;
+      counters_.block_mesh_silent_announcing = silence.announcing;
+      counters_.block_mesh_silent_mute = silence.mute;
+      counters_.block_mesh_by_us = silence.by_us;
+      counters_.block_mesh_by_them = silence.by_them;
+      const auto envelope_silence =
           remote_subscriptions_->takeSilentMeshMembers(
               [](const TopicId &topic) {
-                return topic.ends_with("/beacon_block/ssz_snappy");
+                return topic.ends_with("/execution_payload/ssz_snappy");
               });
+      counters_.envelope_mesh_silent = envelope_silence.silent;
+      counters_.envelope_mesh_silent_announcing = envelope_silence.announcing;
+      counters_.envelope_mesh_silent_mute = envelope_silence.mute;
     }
     return std::exchange(counters_, RouterCounters{});
   }
@@ -358,6 +370,11 @@ namespace libp2p::protocol::gossip {
     assert(started_);
 
     log_.info("IHAVE from peer {} for topic {}", from->str, topic);
+    if (topic.ends_with("/beacon_block/ssz_snappy")) {
+      ++from->block_ihaves_rx;
+    } else if (topic.ends_with("/execution_payload/ssz_snappy")) {
+      ++from->envelope_ihaves_rx;
+    }
 
     // not for a topic we left
     if (isSubscribed(topic) && remote_subscriptions_->hasTopic(topic)
@@ -499,6 +516,10 @@ namespace libp2p::protocol::gossip {
           std::chrono::duration_cast<std::chrono::nanoseconds>(t)};
     }
 
+    bool isEnvelopeTopic(const TopicId &topic) {
+      return topic.ends_with("/execution_payload/ssz_snappy");
+    }
+
     bool isBeaconBlockTopic(const TopicId &topic) {
       static constexpr std::string_view kSuffix = "/beacon_block/ssz_snappy";
       return topic.size() >= kSuffix.size()
@@ -509,6 +530,8 @@ namespace libp2p::protocol::gossip {
   void GossipCore::onTopicMessage(const PeerContextPtr &from,
                                   TopicMessage::Ptr msg) {
     assert(started_);
+
+    ++from->messages_rx;
 
     // do we need this message? Not on a topic we left: the remote peers still
     // subscribed to it keep its entry
@@ -538,6 +561,12 @@ namespace libp2p::protocol::gossip {
         || rejected_.contains(msg_id)
         || pending_validations_.contains(msg_id)) {
       // duplicate delivery: measure this peer's lag vs the first copy
+      if (isEnvelopeTopic(msg->topic)) {
+        if (auto it = first_envelope_delivery_.find(msg_id);
+            it != first_envelope_delivery_.end() && it->second != from) {
+          ++from->envelope_dup_deliveries;
+        }
+      }
       if (isBeaconBlockTopic(msg->topic)) {
         auto it = first_delivery_.find(msg_id);
         if (it != first_delivery_.end() && it->second.second != from) {
@@ -665,6 +694,19 @@ namespace libp2p::protocol::gossip {
       }
       // one line per block: who won the delivery race
       log_.info("first delivery msg_id={:x} from peer {}", msg_id, from->str);
+    } else if (isEnvelopeTopic(msg->topic)) {
+      // Pushed by a mesh member, or pulled (silkworm #149)
+      ++from->envelope_first_deliveries;
+      const auto mesh = remote_subscriptions_->meshMemberIds(msg->topic);
+      ++(std::ranges::find(mesh, from->peer_id) != mesh.end()
+             ? counters_.envelope_first_from_mesh
+             : counters_.envelope_first_from_others);
+      first_envelope_delivery_.emplace(msg_id, from);
+      first_envelope_order_.push_back(msg_id);
+      if (first_envelope_order_.size() > 64) {
+        first_envelope_delivery_.erase(first_envelope_order_.front());
+        first_envelope_order_.pop_front();
+      }
     }
 
     log_.debug("forwarding message");

@@ -72,6 +72,16 @@ namespace libp2p::protocol::gossip {
     uint64_t dup_msg_deliveries = 0;
     double delivery_lag_ewma_ms = -1.0;
 
+    /// Block IHAVEs and messages of any topic it sent us: a silent block mesh
+    /// member still announcing blocks does not count us in its mesh
+    /// (silkworm #149)
+    uint64_t block_ihaves_rx = 0;
+    uint64_t messages_rx = 0;
+    /// The same deliveries and IHAVEs for the execution payload envelopes
+    uint64_t envelope_first_deliveries = 0;
+    uint64_t envelope_dup_deliveries = 0;
+    uint64_t envelope_ihaves_rx = 0;
+
     ~PeerContext() = default;
     PeerContext(PeerContext &&) = delete;
     PeerContext(const PeerContext &) = delete;

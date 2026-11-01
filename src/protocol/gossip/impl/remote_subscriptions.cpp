@@ -19,13 +19,15 @@ namespace libp2p::protocol::gossip {
       basic::Scheduler &scheduler,
       std::shared_ptr<score::PeerScore> peer_score,
       RouterCounters &counters,
-      log::SubLogger &log)
+      log::SubLogger &log,
+      PartialMessages *partial)
       : config_(config),
         connectivity_(connectivity),
         scheduler_(scheduler),
         peer_score_(std::move(peer_score)),
         counters_(counters),
-        log_(log) {}
+        log_(log),
+        partial_(partial) {}
 
   void RemoteSubscriptions::onSelfSubscribed(bool subscribed,
                                              const TopicId &topic) {
@@ -222,7 +224,8 @@ boost::optional<TopicSubscriptions &> RemoteSubscriptions::getItem(
                                                        scheduler_,
                                                        peer_score_,
                                                        counters_,
-                                                       log_));
+                                                       log_,
+                                                       partial_));
       TopicSubscriptions &item = it->second;
       connectivity_.getConnectedPeers().selectIf(
           [&item](const PeerContextPtr &ctx) { item.onPeerSubscribed(ctx); },

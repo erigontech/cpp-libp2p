@@ -12,6 +12,7 @@
 
 #include <libp2p/log/sublogger.hpp>
 
+#include "partial_messages.hpp"
 #include "peer_set.hpp"
 #include "score/peer_score2.hpp"
 
@@ -44,7 +45,8 @@ namespace libp2p::protocol::gossip {
                        basic::Scheduler &scheduler,
                        std::shared_ptr<score::PeerScore> peer_score,
                        RouterCounters &counters,
-                       log::SubLogger &log);
+                       log::SubLogger &log,
+                       PartialMessages *partial = nullptr);
 
     /// Returns true if no peers subscribed and not self-subscribed and
     /// no fanout period at the moment (empty item may be erased)
@@ -181,6 +183,15 @@ namespace libp2p::protocol::gossip {
     uint64_t heartbeat_count_ = 0;
 
     log::SubLogger &log_;
+
+    /// Partial messages extension: the peers that requested partial messages
+    /// get neither full messages nor IHAVEs from us (nullptr: no extension)
+    PartialMessages *partial_;
+
+    /// We owe \p p partial messages instead of full ones and IHAVEs
+    bool sendsPartialTo(const PeerContextPtr &p) const {
+      return partial_ != nullptr && partial_->sendsPartialTo(*p, topic_);
+    }
   };
 
 }  // namespace libp2p::protocol::gossip

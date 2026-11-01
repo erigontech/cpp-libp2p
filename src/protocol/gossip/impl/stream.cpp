@@ -118,7 +118,7 @@ namespace libp2p::protocol::gossip {
     }
     ++peer_->rpcs_rx;
 
-    parser.dispatch(peer_, msg_receiver_);
+    parser.dispatch(peer_, msg_receiver_, messages_read_++ == 0);
 
     // reads again
     read();

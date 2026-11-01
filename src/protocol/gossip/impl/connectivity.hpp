@@ -64,6 +64,16 @@ namespace libp2p::protocol::gossip {
     /// Returns connected peers
     const PeerSet &getConnectedPeers() const;
 
+    /// Partial messages extension: the options our subscriptions to a topic
+    /// announce to the peers we advertised the extension to, and what to do
+    /// when we advertise it to a peer already connected (the subscriptions it
+    /// got carried no options)
+    using PartialOptionsFn =
+        std::function<PartialTopicOptions(const TopicId &topic)>;
+    using PartialAdvertisedFn = std::function<void(const PeerContextPtr &ctx)>;
+    void setPartialHooks(PartialOptionsFn options,
+                         PartialAdvertisedFn advertised);
+
    private:
     using BannedPeers = std::set<std::pair<Time, PeerContextPtr>>;
 
@@ -138,6 +148,12 @@ namespace libp2p::protocol::gossip {
 
     /// Renew addresses in address repo periodically within heartbeat timer
     std::chrono::milliseconds addresses_renewal_time_{0};
+
+    /// See setPartialHooks
+    PartialOptionsFn partial_options_;
+    PartialAdvertisedFn partial_advertised_;
+    PartialTopicOptions partialOptions(const PeerContextPtr &ctx,
+                                       const TopicId &topic) const;
 
     /// Logger
     log::SubLogger log_;

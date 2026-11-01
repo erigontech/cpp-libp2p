@@ -65,6 +65,7 @@ namespace libp2p::protocol::gossip {
               onLocalSubscriptionChanged(subscribe, topic);
             }
         )),
+        partial_(config_),
         msg_seq_(scheduler_->now().count()),
         heartbeat_timer_(),
         log_("gossip", "Gossip", local_peer_id_.toBase58().substr(46)) {
@@ -124,8 +125,24 @@ namespace libp2p::protocol::gossip {
       connectivity_->addBootstrapPeer(p.first, p.second);
     }
 
-    remote_subscriptions_ = std::make_shared<RemoteSubscriptions>(
-        config_, *connectivity_, *scheduler_, peer_score2_, counters_, log_);
+    remote_subscriptions_ =
+        std::make_shared<RemoteSubscriptions>(config_,
+                                              *connectivity_,
+                                              *scheduler_,
+                                              peer_score2_,
+                                              counters_,
+                                              log_,
+                                              &partial_);
+    connectivity_->setPartialHooks(
+        [this](const TopicId &topic) { return partial_.announced(topic); },
+        [this](const PeerContextPtr &ctx) {
+          for (const auto &[topic, _] : local_subscriptions_->subscribedTo()) {
+            if (auto options = partial_.announced(topic);
+                options.supports_sending_partial) {
+              ctx->message_builder->addSubscription(true, topic, options);
+            }
+          }
+        });
 
     started_ = true;
 
@@ -362,7 +379,220 @@ namespace libp2p::protocol::gossip {
     if (subscribe) {
       remote_subscriptions_->onPeerSubscribed(peer, topic);
     } else {
+      peer->partial_topics.erase(topic);
       remote_subscriptions_->onPeerUnsubscribed(peer, topic, false);
+    }
+  }
+
+  void GossipCore::onExtensions(const PeerContextPtr &from,
+                                const std::optional<PeerExtensions> &extensions,
+                                bool first_on_stream) {
+    if (!first_on_stream) {
+      // gossipsub v1.3: in the first message on the stream and only there
+      ++counters_.extensions_repeated;
+      peer_score2_->add_penalty(from->peer_id, 1);
+      log_.debug("peer {} sent the Extensions control message again",
+                 from->str);
+      return;
+    }
+    const bool advertised = extensions && extensions->partial_messages;
+    // counted with the extension off too: how many peers would use it
+    if (advertised) {
+      ++counters_.partial_streams_advertised;
+    }
+    from->partial_messages = config_.partial_messages && advertised;
+  }
+
+  void GossipCore::onPartialSubscription(const PeerContextPtr &from,
+                                         const TopicId &topic,
+                                         PartialTopicOptions options) {
+    if (!config_.partial_messages) {
+      return;
+    }
+    // a peer requesting partial messages supports sending them
+    options.supports_sending_partial =
+        options.supports_sending_partial || options.requests_partial;
+    if (options.supports_sending_partial) {
+      from->partial_topics[topic] = options;
+    } else {
+      from->partial_topics.erase(topic);
+    }
+  }
+
+  void GossipCore::onPartialMessage(const PeerContextPtr &from,
+                                    PartialMessage msg) {
+    // the extension advertised by both sides, on a topic we enabled
+    const auto options = partial_.topicOptions(msg.topic);
+    if (!started_ || !config_.partial_messages || !from->partial_messages
+        || !from->partial_advertised || !options
+        || peer_score2_->score(from->peer_id)
+               < score_thresholds2_.graylist_threshold) {
+      ++counters_.partial_rpcs_dropped;
+      return;
+    }
+    if (msg.partial_message && !options->requests_partial) {
+      // parts we did not request: a violation, unless the peer had not read
+      // our latest subscription yet
+      ++counters_.partial_unrequested;
+      if (scheduler_->now() - partial_.optionsChangedAt(msg.topic)
+          > config_.partial_options_grace_msec) {
+        peer_score2_->add_penalty(from->peer_id, 1);
+      }
+      msg.partial_message.reset();
+    }
+    if (!msg.partial_message && !msg.parts_metadata) {
+      ++counters_.partial_rpcs_dropped;
+      return;
+    }
+    auto *group = partial_.group(msg.topic, msg.group_id, from->peer_id);
+    if (group == nullptr) {
+      // past the groups the peers may open
+      ++counters_.partial_rpcs_dropped;
+      return;
+    }
+    auto &state = group->peers[from->peer_id];
+    state.requests_partial = partial_.mayReceiveParts(*from, msg.topic);
+    if (msg.parts_metadata) {
+      // a later parts metadata replaces a prior one
+      state.parts_metadata = msg.parts_metadata;
+    }
+    ++counters_.partial_rpcs_rx;
+    counters_.partial_bytes_rx +=
+        (msg.partial_message ? msg.partial_message->size() : 0)
+        + (msg.parts_metadata ? msg.parts_metadata->size() : 0);
+    if (partial_message_handler_) {
+      partial_message_handler_(msg);
+    }
+  }
+
+  bool GossipCore::setPartialTopic(const TopicId &topic,
+                                   PartialTopicOptions options) {
+    if (!config_.partial_messages) {
+      return false;
+    }
+    if (partial_.setTopicOptions(topic, options, scheduler_->now())
+        && isSubscribed(topic)) {
+      partial_reannounce_.insert(topic);
+    }
+    return true;
+  }
+
+  void GossipCore::setPartialMessageHandler(PartialMessageHandler handler) {
+    partial_message_handler_ = std::move(handler);
+  }
+
+  void GossipCore::setPartialGossipHandler(PartialGossipHandler handler) {
+    partial_gossip_handler_ = std::move(handler);
+  }
+
+  std::vector<PeerContextPtr> GossipCore::partialPeers(
+      const TopicId &topic) const {
+    std::vector<PeerContextPtr> peers;
+    const auto &connected = connectivity_->getConnectedPeers();
+    for (const auto &id : remote_subscriptions_->meshMemberIds(topic)) {
+      if (auto ctx = connected.find(id);
+          ctx && partial_.exchangesWith(*ctx.value(), topic)) {
+        peers.push_back(std::move(ctx.value()));
+      }
+    }
+    if (!peers.empty()) {
+      return peers;
+    }
+    // no mesh (a topic we publish in without subscribing): up to D of the
+    // subscribers, as a fanout
+    connected.selectAll([&](const PeerContextPtr &ctx) {
+      if (peers.size() < config_.D && ctx->subscribed_to.contains(topic)
+          && partial_.exchangesWith(*ctx, topic)) {
+        peers.push_back(ctx);
+      }
+    });
+    return peers;
+  }
+
+  bool GossipCore::publishPartial(const TopicId &topic,
+                                  const Bytes &group_id,
+                                  const PartialPublishFn &fn) {
+    if (!started_ || !config_.partial_messages) {
+      return false;
+    }
+    auto *group = partial_.group(topic, group_id, std::nullopt);
+    if (group == nullptr) {
+      // the topic is not enabled
+      return false;
+    }
+    for (const auto &ctx : partialPeers(topic)) {
+      group->peers.try_emplace(ctx->peer_id);
+    }
+    const auto &connected = connectivity_->getConnectedPeers();
+    for (auto it = group->peers.begin(); it != group->peers.end();) {
+      auto ctx = connected.find(it->first);
+      if (!ctx) {
+        it = group->peers.erase(it);
+        continue;
+      }
+      it->second.requests_partial =
+          partial_.mayReceiveParts(*ctx.value(), topic);
+      ++it;
+    }
+    const auto actions = fn(group->peers);
+    for (const auto &action : actions) {
+      auto ctx = connected.find(action.peer);
+      if (!ctx) {
+        ++counters_.partial_actions_dropped;
+        continue;
+      }
+      // parts to the peers that requested them, metadata to those that
+      // support sending parts
+      const bool parts = !action.partial_message.empty()
+                      && partial_.mayReceiveParts(*ctx.value(), topic);
+      const bool metadata = !action.parts_metadata.empty()
+                         && partial_.mayReceiveMetadata(*ctx.value(), topic);
+      if ((!action.partial_message.empty() && !parts)
+          || (!action.parts_metadata.empty() && !metadata)) {
+        ++counters_.partial_actions_dropped;
+      }
+      if (!parts && !metadata) {
+        continue;
+      }
+      static const Bytes kNone;
+      ctx.value()->message_builder->addPartialMessage(
+          topic,
+          group_id,
+          parts ? action.partial_message : kNone,
+          metadata ? action.parts_metadata : kNone);
+      auto &state = group->peers[action.peer];
+      state.requests_partial = partial_.mayReceiveParts(*ctx.value(), topic);
+      if (metadata) {
+        state.sent_parts_metadata = action.parts_metadata;
+      }
+      ++counters_.partial_rpcs_tx;
+      counters_.partial_bytes_tx +=
+          (parts ? action.partial_message.size() : 0)
+          + (metadata ? action.parts_metadata.size() : 0);
+      connectivity_->peerIsWritable(ctx.value(), true);
+    }
+    connectivity_->flush();
+    return true;
+  }
+
+  void GossipCore::reportPartialMessage(const TopicId &topic,
+                                        const peer::PeerId &peer,
+                                        PartialFeedback feedback) {
+    ensureTopicScoreParams(topic);
+    if (feedback == PartialFeedback::kUseful) {
+      peer_score2_->useful_partial_message(peer, topic);
+    } else {
+      peer_score2_->reject_invalid_message(peer, topic);
+    }
+  }
+
+  void GossipCore::emitPartialGossip() {
+    // the handler publishes in the groups: they are joined first
+    for (const auto &emission : partial_.takeGossip()) {
+      if (partial_gossip_handler_) {
+        partial_gossip_handler_(
+            emission.topic, emission.group_id, emission.peers);
+      }
     }
   }
 
@@ -797,6 +1027,18 @@ namespace libp2p::protocol::gossip {
     // heartbeat changes per topic
     remote_subscriptions_->onHeartbeat();
 
+    // partial messages: gossip, then the groups age
+    emitPartialGossip();
+    partial_.onHeartbeat();
+
+    // the subscriptions whose partial options changed are announced again
+    for (const auto &topic : partial_reannounce_) {
+      if (isSubscribed(topic)) {
+        broadcast_on_heartbeat_.try_emplace(topic, true);
+      }
+    }
+    partial_reannounce_.clear();
+
     // send changes to peers
     connectivity_->onHeartbeat(broadcast_on_heartbeat_);
     broadcast_on_heartbeat_.clear();
@@ -848,7 +1090,12 @@ namespace libp2p::protocol::gossip {
       // notify the new peer about all topics we subscribed to
       if (!local_subscriptions_->subscribedTo().empty()) {
         for (const auto &local_sub : local_subscriptions_->subscribedTo()) {
-          ctx->message_builder->addSubscription(true, local_sub.first);
+          // the partial options only once we advertised the extension
+          ctx->message_builder->addSubscription(
+              true,
+              local_sub.first,
+              ctx->partial_advertised ? partial_.announced(local_sub.first)
+                                      : PartialTopicOptions{});
         }
         connectivity_->peerIsWritable(ctx, true);
         connectivity_->flush();
@@ -857,9 +1104,21 @@ namespace libp2p::protocol::gossip {
       peer_score2_->remove_peer(ctx->peer_id, toScoreTime(scheduler_->now()));
       ctx->outbound = false;
       ctx->ips.clear();
+      ctx->partial_messages = false;
+      ctx->partial_advertised = false;
+      ctx->partial_topics.clear();
+      partial_.onPeerDisconnected(ctx->peer_id);
       log_.debug("peer {} disconnected", ctx->str);
       remote_subscriptions_->onPeerDisconnected(ctx);
     }
+  }
+
+  PeerContextPtr GossipCore::connectedPeer(const peer::PeerId &peer) const {
+    if (!connectivity_) {
+      return nullptr;
+    }
+    auto ctx = connectivity_->getConnectedPeers().find(peer);
+    return ctx ? ctx.value() : nullptr;
   }
 
   void GossipCore::refreshConnectionInfos() {

@@ -562,6 +562,11 @@ namespace libp2p::protocol::gossip::score {
     }
   }
 
+  void PeerScore::useful_partial_message(const PeerId &from,
+                                         const TopicId &topic) {
+    mark_first_message_delivery(from, topic);
+  }
+
   void PeerScore::reject_invalid_message(const PeerId &from,
                                          const TopicId &topic) {
     mark_invalid_message_delivery(from, topic);

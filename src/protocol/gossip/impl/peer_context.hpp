@@ -7,6 +7,7 @@
 #pragma once
 
 #include <deque>
+#include <map>
 #include <set>
 #include <unordered_map>
 
@@ -87,6 +88,16 @@ namespace libp2p::protocol::gossip {
     uint64_t block_idontwant_rx = 0;
     uint64_t envelope_idontwant_rx = 0;
     bool quic = false;
+
+    /// Partial messages extension (gossipsub v1.3, silkworm #174), only while
+    /// Config::partial_messages is on: the peer advertised it in the
+    /// Extensions control message that opened its stream to us, we advertised
+    /// it in the one that opened ours to it (our subscriptions to it carry our
+    /// partial options only then), and the options of its subscriptions that
+    /// set any. Partial messages are exchanged only when both advertised it
+    bool partial_messages = false;
+    bool partial_advertised = false;
+    std::map<TopicId, PartialTopicOptions> partial_topics;
 
     ~PeerContext() = default;
     PeerContext(PeerContext &&) = delete;

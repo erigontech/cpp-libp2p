@@ -9,9 +9,19 @@ message RPC {
 	message SubOpts {
 		optional bool subscribe = 1; // subscribe or unsubcribe
 		optional string topicid = 2;
+		// Partial messages extension: the sender prefers partial messages on
+		// the topic (and supports sending them)
+		optional bool requestsPartial = 3;
+		// Partial messages extension: the sender supports sending partial
+		// messages on the topic
+		optional bool supportsSendingPartial = 4;
 	}
 
 	optional ControlMessage control = 3;
+
+	// gossipsub v1.3 extensions (libp2p/specs
+	// pubsub/gossipsub/extensions/extensions.proto)
+	optional PartialMessagesExtension partial = 10;
 }
 
 message Message {
@@ -29,6 +39,26 @@ message ControlMessage {
 	repeated ControlGraft graft = 3;
 	repeated ControlPrune prune = 4;
 	repeated ControlIDontWant idontwant = 5;
+	// gossipsub v1.3: only in the first message on a stream
+	optional ControlExtensions extensions = 6;
+}
+
+// gossipsub v1.3 Extensions control message: the extensions the sender
+// supports
+message ControlExtensions {
+	optional bool partialMessages = 10;
+}
+
+// Partial messages extension (libp2p/specs
+// pubsub/gossipsub/partial-messages.md): the encodings of the parts and of
+// the parts metadata are defined by the application
+message PartialMessagesExtension {
+	optional bytes topicID = 1;
+	optional bytes groupID = 2;
+	// One or more parts of the message of the group
+	optional bytes partialMessage = 3;
+	// The parts the sender has and wants
+	optional bytes partsMetadata = 4;
 }
 
 message ControlIDontWant {

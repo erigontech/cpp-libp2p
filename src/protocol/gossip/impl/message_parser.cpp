@@ -9,6 +9,7 @@
 #include <libp2p/log/logger.hpp>
 
 #include "message_receiver.hpp"
+#include "peer_context.hpp"
 
 #include <libp2p/peer/peer_id.hpp>
 
@@ -39,14 +40,40 @@ namespace libp2p::protocol::gossip {
   }
 
   void MessageParser::dispatch(const PeerContextPtr &from,
-                               MessageReceiver &receiver) {
+                               MessageReceiver &receiver,
+                               bool first_on_stream) {
     if (!pb_msg_) {
       return;
+    }
+
+    // gossipsub v1.3: the extensions first, they qualify the rest
+    const bool has_extensions =
+        pb_msg_->has_control() && pb_msg_->control().has_extensions();
+    if (first_on_stream || has_extensions) {
+      std::optional<PeerExtensions> extensions;
+      if (has_extensions) {
+        extensions = PeerExtensions{
+            .partial_messages =
+                pb_msg_->control().extensions().partialmessages(),
+        };
+      }
+      receiver.onExtensions(from, extensions, first_on_stream);
     }
 
     for (const auto &s : pb_msg_->subscriptions()) {
       if (!s.has_subscribe() || !s.has_topicid()) {
         continue;
+      }
+      // the partial messages options are ignored when unsubscribing
+      if (s.subscribe()) {
+        receiver.onPartialSubscription(
+            from,
+            s.topicid(),
+            PartialTopicOptions{
+                .requests_partial = s.requestspartial(),
+                .supports_sending_partial =
+                    s.requestspartial() || s.supportssendingpartial(),
+            });
       }
       receiver.onSubscription(from, s.subscribe(), s.topicid());
     }
@@ -142,6 +169,24 @@ namespace libp2p::protocol::gossip {
         message->key = fromString(m.key());
       }
       receiver.onTopicMessage(from, std::move(message));
+    }
+
+    if (pb_msg_->has_partial()) {
+      const auto &p = pb_msg_->partial();
+      PartialMessage message{
+          .from = from->peer_id,
+          .topic = p.topicid(),
+          .group_id = fromString(p.groupid()),
+          .partial_message = std::nullopt,
+          .parts_metadata = std::nullopt,
+      };
+      if (p.has_partialmessage()) {
+        message.partial_message = fromString(p.partialmessage());
+      }
+      if (p.has_partsmetadata()) {
+        message.parts_metadata = fromString(p.partsmetadata());
+      }
+      receiver.onPartialMessage(from, std::move(message));
     }
 
     receiver.onMessageEnd(from);

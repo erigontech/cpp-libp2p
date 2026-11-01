@@ -18,6 +18,8 @@ namespace libp2p::protocol::gossip {
 
   namespace {
 
+    const peer::ProtocolName kGossipsubV13 = "/meshsub/1.3.0";
+
     template <typename T>
     bool contains(const std::vector<T> &container, const T &element) {
       return !(container.empty())
@@ -366,11 +368,24 @@ namespace libp2p::protocol::gossip {
 
     gossip_stream->read();
 
+    // gossipsub v1.3: the Extensions control message goes in the first
+    // message of the stream, before anything else is flushed to it
+    const bool advertise =
+        config_.partial_messages && rstream.value().protocol == kGossipsubV13;
+    if (advertise) {
+      ctx->message_builder->addExtensions(true);
+      ctx->partial_advertised = true;
+      peerIsWritable(ctx, true);
+    }
+
     ctx->outbound_stream = std::move(gossip_stream);
 
     if (is_new_connection) {
       connected_peers_.insert(ctx);
       connected_cb_(true, ctx);
+    } else if (advertise && partial_advertised_) {
+      // it got our subscriptions without the partial options
+      partial_advertised_(ctx);
     }
 
     flush(ctx);
@@ -384,6 +399,7 @@ namespace libp2p::protocol::gossip {
     }
 
     ctx->message_builder->reset();
+    ctx->partial_advertised = false;
     for (auto &s : ctx->inbound_streams) {
       s->close();
     }
@@ -513,8 +529,9 @@ namespace libp2p::protocol::gossip {
 
       connected_peers_.selectAll(
           [&flat_changes, this](const PeerContextPtr &ctx) {
-            boost::for_each(flat_changes, [&ctx](auto &&p) {
-              ctx->message_builder->addSubscription(p.first, p.second);
+            boost::for_each(flat_changes, [this, &ctx](auto &&p) {
+              ctx->message_builder->addSubscription(
+                  p.first, p.second, partialOptions(ctx, p.second));
             });
             flush(ctx);
           });
@@ -541,6 +558,18 @@ namespace libp2p::protocol::gossip {
 
   const PeerSet &Connectivity::getConnectedPeers() const {
     return connected_peers_;
+  }
+
+  void Connectivity::setPartialHooks(PartialOptionsFn options,
+                                     PartialAdvertisedFn advertised) {
+    partial_options_ = std::move(options);
+    partial_advertised_ = std::move(advertised);
+  }
+
+  PartialTopicOptions Connectivity::partialOptions(const PeerContextPtr &ctx,
+                                                   const TopicId &topic) const {
+    return partial_options_ && ctx->partial_advertised ? partial_options_(topic)
+                                                       : PartialTopicOptions{};
   }
 
 }  // namespace libp2p::protocol::gossip

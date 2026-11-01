@@ -312,6 +312,11 @@ namespace libp2p::protocol::gossip::score {
     /// reason for an invalid message.
     void reject_invalid_message(const PeerId &from, const TopicId &topic);
 
+    /// Novel valid parts a peer sent in partial messages (the partial
+    /// messages extension, as go-libp2p-pubsub PeerFeedbackUsefulMessage): a
+    /// first message delivery, and a mesh message delivery in the mesh
+    void useful_partial_message(const PeerId &from, const TopicId &topic);
+
     /// A message failed validation (or was ignored): penalizes / clears
     /// according to reason and the delivery-status state machine.
     void reject_message(const PeerId &from,

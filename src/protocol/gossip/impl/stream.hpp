@@ -84,6 +84,10 @@ namespace libp2p::protocol::gossip {
 
     bool reading_ = false;
 
+    /// Messages read from the stream: the first one carries the peer's
+    /// Extensions control message (gossipsub v1.3)
+    size_t messages_read_ = 0;
+
     /// Handle for current operation timeout guard
     basic::Scheduler::Handle timeout_handle_;
 

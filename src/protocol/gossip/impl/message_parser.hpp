@@ -27,8 +27,12 @@ namespace libp2p::protocol::gossip {
     /// Parses RPC protobuf message received from wire
     bool parse(BytesIn bytes);
 
-    /// Dispatches parts of parsed aggregate message to receiver
-    void dispatch(const PeerContextPtr &from, MessageReceiver &receiver);
+    /// Dispatches parts of parsed aggregate message to receiver. \p
+    /// first_on_stream: the first message read from its stream, which carries
+    /// the Extensions control message (gossipsub v1.3)
+    void dispatch(const PeerContextPtr &from,
+                  MessageReceiver &receiver,
+                  bool first_on_stream = false);
 
    private:
     /// Parsed protobuf message

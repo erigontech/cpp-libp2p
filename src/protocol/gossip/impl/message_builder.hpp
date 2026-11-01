@@ -41,8 +41,23 @@ namespace libp2p::protocol::gossip {
     /// Serializes into byte buffer and clears internal state
     outcome::result<SharedBuffer> serialize();
 
-    /// Adds subscription notification
-    void addSubscription(bool subscribe, const TopicId &topic);
+    /// Adds subscription notification, with the partial messages options of
+    /// the topic (only those set are written)
+    void addSubscription(bool subscribe,
+                         const TopicId &topic,
+                         PartialTopicOptions partial = {});
+
+    /// Adds the gossipsub v1.3 Extensions control message: the first message
+    /// on a stream must carry it
+    void addExtensions(bool partial_messages);
+
+    /// Adds a partial messages RPC (empty \p partial_message or \p
+    /// parts_metadata: absent). An RPC carries one: the first goes in the
+    /// message with the rest, each other one in a message of its own after it
+    void addPartialMessage(const TopicId &topic,
+                           const Bytes &group_id,
+                           const Bytes &partial_message,
+                           const Bytes &parts_metadata);
 
     /// Adds "I have" notification
     void addIHave(const TopicId &topic, const MessageId &msg_id);
@@ -86,5 +101,14 @@ namespace libp2p::protocol::gossip {
 
     /// Used to prevent duplicate forwarding
     std::unordered_set<MessageId> messages_added_;
+
+    /// Partial messages RPCs waiting to be serialized
+    struct Partial {
+      TopicId topic;
+      Bytes group_id;
+      Bytes partial_message;
+      Bytes parts_metadata;
+    };
+    std::vector<Partial> partials_;
   };
 }  // namespace libp2p::protocol::gossip

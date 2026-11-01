@@ -19,8 +19,9 @@
 
 #include "message_cache.hpp"
 #include "message_receiver.hpp"
-#include "score/peer_score2.hpp"
+#include "partial_messages.hpp"
 #include "peer_set.hpp"
+#include "score/peer_score2.hpp"
 
 namespace libp2p::protocol::gossip {
 
@@ -79,10 +80,28 @@ namespace libp2p::protocol::gossip {
     RouterCounters takeCounters() override;
     void setNetworkSize(size_t active_validators,
                         uint64_t current_slot) override;
+    bool setPartialTopic(const TopicId &topic,
+                         PartialTopicOptions options) override;
+    void setPartialMessageHandler(PartialMessageHandler handler) override;
+    void setPartialGossipHandler(PartialGossipHandler handler) override;
+    bool publishPartial(const TopicId &topic,
+                        const Bytes &group_id,
+                        const PartialPublishFn &fn) override;
+    void reportPartialMessage(const TopicId &topic,
+                              const peer::PeerId &peer,
+                              PartialFeedback feedback) override;
 
     outcome::result<void> signMessage(TopicMessage &msg) const;
 
     // MessageReceiver overrides
+    void onExtensions(const PeerContextPtr &from,
+                      const std::optional<PeerExtensions> &extensions,
+                      bool first_on_stream) override;
+    void onPartialSubscription(const PeerContextPtr &from,
+                               const TopicId &topic,
+                               PartialTopicOptions options) override;
+    void onPartialMessage(const PeerContextPtr &from,
+                          PartialMessage msg) override;
     void onSubscription(const PeerContextPtr &from,
                         bool subscribe,
                         const TopicId &topic) override;
@@ -257,6 +276,22 @@ namespace libp2p::protocol::gossip {
     /// Local {un}subscribe changes to be broadcasted to peers
     std::map<TopicId, bool> broadcast_on_heartbeat_;
 
+    /// Partial messages extension: the topics enabled and their groups
+    PartialMessages partial_;
+    PartialMessageHandler partial_message_handler_;
+    PartialGossipHandler partial_gossip_handler_;
+    /// Subscribed topics whose partial options changed: their subscription
+    /// is announced again at the next heartbeat
+    std::set<TopicId> partial_reannounce_;
+
+    /// Hands the peers the heartbeat gossip picked on the partial topics to
+    /// the application, for the groups we published in
+    void emitPartialGossip();
+
+    /// The peers of the partial topic's mesh we exchange partial messages
+    /// with, or of its subscribers when we have no mesh (fanout)
+    std::vector<PeerContextPtr> partialPeers(const TopicId &topic) const;
+
     /// Incremented msg sequence number
     uint64_t msg_seq_;
 
@@ -288,6 +323,9 @@ namespace libp2p::protocol::gossip {
     /// Refreshes the direction and P6 IPs of every connected peer, as the
     /// heartbeat does every kConnectionInfoSweepHeartbeats (tests)
     void refreshConnectionInfos();
+
+    /// The context of a connected peer, nullptr if not connected (tests)
+    PeerContextPtr connectedPeer(const peer::PeerId &peer) const;
 
    private:
     /// Logger

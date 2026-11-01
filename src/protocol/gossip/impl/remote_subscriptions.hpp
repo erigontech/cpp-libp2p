@@ -26,7 +26,8 @@ namespace libp2p::protocol::gossip {
                         basic::Scheduler &scheduler,
                         std::shared_ptr<score::PeerScore> peer_score,
                         RouterCounters &counters,
-                        log::SubLogger &log);
+                        log::SubLogger &log,
+                        PartialMessages *partial = nullptr);
 
     /// This host subscribes or unsubscribes
     void onSelfSubscribed(bool subscribed, const TopicId &topic);
@@ -87,6 +88,8 @@ namespace libp2p::protocol::gossip {
     std::unordered_map<TopicId, TopicSubscriptions> table_;
 
     log::SubLogger &log_;
+
+    PartialMessages *partial_;
   };
 
 }  // namespace libp2p::protocol::gossip

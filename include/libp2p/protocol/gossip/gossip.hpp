@@ -9,6 +9,7 @@
 #include <chrono>
 #include <functional>
 #include <map>
+#include <optional>
 #include <set>
 #include <string>
 #include <unordered_map>
@@ -142,11 +143,97 @@ namespace libp2p::protocol::gossip {
     /// Sign published messages
     bool sign_messages = false;
 
+    /// gossipsub v1.3 partial messages extension (libp2p/specs
+    /// pubsub/gossipsub/partial-messages.md; EIP-8136 for the eth2 data
+    /// columns): advertised in the Extensions control message that opens the
+    /// /meshsub/1.3.0 streams we write to, so protocol_version should be
+    /// "/meshsub/1.3.0". Off, nothing is advertised and the partial messages
+    /// and subscription options of the peers are ignored. On, a topic
+    /// exchanges partial messages only once setPartialTopic enables it
+    bool partial_messages = false;
+
+    /// Partial message groups the peers may open on a topic (a group is
+    /// opened by its first message when we did not publish in it), all peers
+    /// together and each peer, as go-libp2p-pubsub: the messages of a group
+    /// past either bound are dropped
+    size_t partial_peer_groups_per_topic = 255;
+    size_t partial_peer_groups_per_topic_per_peer = 8;
+
+    /// Heartbeats a partial message group is kept after its last message,
+    /// sent or received (go-libp2p-pubsub keeps a group 3 heartbeats after
+    /// we publish in it)
+    unsigned partial_group_ttl_heartbeats = 3;
+
+    /// After we change the partial options of a topic, the time a peer may
+    /// still send parts we no longer requested without a penalty (it may not
+    /// have read our new subscription yet)
+    std::chrono::milliseconds partial_options_grace_msec{
+        std::chrono::seconds(10)};
   };
 
   using TopicId = std::string;
   using TopicList = std::vector<TopicId>;
   using TopicSet = std::set<TopicId>;
+
+  /// Partial messages extension: the options we announce when subscribing to
+  /// a topic (SubOpts requestsPartial, supportsSendingPartial)
+  struct PartialTopicOptions {
+    /// we prefer partial messages on the topic, which implies we support
+    /// sending them
+    bool requests_partial = false;
+    /// we answer the partial message requests of the topic
+    bool supports_sending_partial = false;
+  };
+
+  /// Partial messages extension: a partial messages RPC a peer sent us
+  struct PartialMessage {
+    peer::PeerId from;
+    TopicId topic;
+    Bytes group_id;
+    /// Parts of the message of the group, encoded by the application. Only on
+    /// a topic where we request partial messages
+    std::optional<Bytes> partial_message;
+    /// The parts the peer has and wants, encoded by the application: it
+    /// replaces the previous one of the group
+    std::optional<Bytes> parts_metadata;
+  };
+
+  /// Partial messages extension: what the router keeps of a peer in a group
+  struct PartialPeerState {
+    /// it requested partial messages on the topic: parts may be sent to it
+    bool requests_partial = false;
+    /// its last parts metadata in the group, which the application may update
+    /// (e.g. with the parts it sent to it since)
+    std::optional<Bytes> parts_metadata;
+    /// the parts metadata we sent to it last in the group
+    std::optional<Bytes> sent_parts_metadata;
+  };
+  using PartialPeerStates = std::unordered_map<peer::PeerId, PartialPeerState>;
+
+  /// Partial messages extension: what to send to a peer in a group
+  struct PartialPublishAction {
+    peer::PeerId peer;
+    /// parts to send, empty for none: not sent unless the peer requested
+    /// partial messages on the topic
+    Bytes partial_message;
+    /// parts metadata to send, empty for none: not sent unless the peer
+    /// supports sending partial messages on the topic
+    Bytes parts_metadata;
+  };
+
+  /// Decides what to send in a group, from the peers' states, which it may
+  /// update
+  using PartialPublishFn =
+      std::function<std::vector<PartialPublishAction>(PartialPeerStates &)>;
+
+  /// Partial messages extension: the application's verdict on parts a peer
+  /// sent, which the router cannot judge itself
+  enum class PartialFeedback {
+    /// novel and valid: a first message delivery (P2, and P3 in the mesh)
+    kUseful,
+    /// invalid: an invalid message delivery (P4)
+    kInvalid,
+  };
 
   /// What the router decided about meshes and peer exchange, since the
   /// counters were last taken
@@ -238,6 +325,31 @@ namespace libp2p::protocol::gossip {
     /// evicted them for silence lately, one per peer and refill: the refill
     /// below D_lo runs at each heartbeat while the mesh is below (silkworm #162)
     uint64_t refill_skipped_silent = 0;
+    /// Partial messages extension (silkworm #174). Streams that opened with
+    /// a peer's Extensions control message advertising it (counted with the
+    /// extension off too), and the Extensions control messages that came
+    /// later on a stream (a P7 penalty)
+    uint64_t partial_streams_advertised = 0;
+    uint64_t extensions_repeated = 0;
+    /// Partial messages RPCs received and handed to the application, with
+    /// their parts and metadata bytes, and those dropped: the extension not
+    /// advertised by both sides, a topic we did not enable, a group past the
+    /// peer limits, or empty
+    uint64_t partial_rpcs_rx = 0;
+    uint64_t partial_bytes_rx = 0;
+    uint64_t partial_rpcs_dropped = 0;
+    /// Parts received on a topic where we did not request them (dropped, a
+    /// P7 penalty past Config::partial_options_grace_msec)
+    uint64_t partial_unrequested = 0;
+    /// Partial messages RPCs sent, with their bytes, and the actions of the
+    /// application not sent to a peer that did not ask for them
+    uint64_t partial_rpcs_tx = 0;
+    uint64_t partial_bytes_tx = 0;
+    uint64_t partial_actions_dropped = 0;
+    /// Full messages not forwarded, and IHAVEs not sent, to peers that
+    /// requested partial messages on a topic where we send them
+    uint64_t partial_full_forwards_skipped = 0;
+    uint64_t partial_ihaves_skipped = 0;
   };
 
   /// Gossip protocol interface
@@ -382,6 +494,48 @@ namespace libp2p::protocol::gossip {
     /// activation. Re-installs the parameters of the topics already scored
     virtual void setNetworkSize(size_t active_validators,
                                 uint64_t current_slot) = 0;
+
+    /// Partial messages extension (Config::partial_messages): the options we
+    /// announce for \p topic in our subscriptions. A topic is enabled while
+    /// either option is set; the peers learn the change at the next
+    /// heartbeat. False if the extension is off
+    virtual bool setPartialTopic(const TopicId &topic,
+                                 PartialTopicOptions options) = 0;
+
+    /// Receives the partial messages RPCs of the enabled topics, from the
+    /// peers that advertised the extension to us and we to them, on the
+    /// gossip thread: it must not block, and the parts are not validated
+    using PartialMessageHandler = std::function<void(const PartialMessage &)>;
+    virtual void setPartialMessageHandler(PartialMessageHandler handler) = 0;
+
+    /// At a heartbeat, the peers of \p topic the router gossips to, instead
+    /// of IHAVEs, for each group we published in that they are not in yet:
+    /// the application should publishPartial to them (partial message
+    /// gossip)
+    using PartialGossipHandler =
+        std::function<void(const TopicId &topic,
+                           const Bytes &group_id,
+                           const std::vector<peer::PeerId> &peers)>;
+    virtual void setPartialGossipHandler(PartialGossipHandler handler) = 0;
+
+    /// Sends in the group \p group_id of \p topic what \p fn decides from
+    /// the peers' states: the mesh members we exchange partial messages with
+    /// on the topic, and the peers already in the group. An action may also
+    /// name another connected peer. Full messages are not forwarded to the
+    /// peers that requested partial messages on a topic where we support
+    /// sending them: the application must send them the parts. False if not
+    /// started, the extension is off or the topic is not enabled
+    virtual bool publishPartial(const TopicId &topic,
+                                const Bytes &group_id,
+                                const PartialPublishFn &fn) = 0;
+
+    /// Scores what \p peer sent in partial messages on \p topic. The
+    /// application should cap the useful parts a peer is credited for per
+    /// message, so that sending one part at a time scores no better than
+    /// sending them together (EIP-8136)
+    virtual void reportPartialMessage(const TopicId &topic,
+                                      const peer::PeerId &peer,
+                                      PartialFeedback feedback) = 0;
   };
 
   // Creates Gossip object

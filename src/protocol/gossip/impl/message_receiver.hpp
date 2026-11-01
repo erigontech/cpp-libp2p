@@ -6,14 +6,35 @@
 
 #pragma once
 
+#include <optional>
+
 #include "common.hpp"
 
 namespace libp2p::protocol::gossip {
+
+  /// The extensions a peer advertised in a gossipsub v1.3 Extensions control
+  /// message
+  struct PeerExtensions {
+    bool partial_messages = false;
+  };
 
   /// Interface for accepting sub-messages read from wire
   class MessageReceiver {
    public:
     virtual ~MessageReceiver() = default;
+
+    /// The first message of a stream from the peer, with its Extensions
+    /// control message if it has one (gossipsub v1.3), or a later message of
+    /// the stream with one (a protocol violation)
+    virtual void onExtensions(const PeerContextPtr &from,
+                              const std::optional<PeerExtensions> &extensions,
+                              bool first_on_stream) = 0;
+
+    /// The partial messages options of a subscription the peer sent, before
+    /// onSubscription (subscriptions only)
+    virtual void onPartialSubscription(const PeerContextPtr &from,
+                                       const TopicId &topic,
+                                       PartialTopicOptions options) = 0;
 
     /// Topic subscribe-unsubscribe request received
     virtual void onSubscription(const PeerContextPtr &from,
@@ -51,6 +72,10 @@ namespace libp2p::protocol::gossip {
     /// Message received
     virtual void onTopicMessage(const PeerContextPtr &from,
                                 TopicMessage::Ptr msg) = 0;
+
+    /// Partial messages RPC received (partial messages extension)
+    virtual void onPartialMessage(const PeerContextPtr &from,
+                                  PartialMessage msg) = 0;
 
     /// Current wire protocol message dispatch ended
     virtual void onMessageEnd(const PeerContextPtr &from) = 0;

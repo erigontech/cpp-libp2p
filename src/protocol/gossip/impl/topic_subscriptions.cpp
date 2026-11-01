@@ -231,7 +231,8 @@ namespace libp2p::protocol::gossip {
       basic::Scheduler &scheduler,
       std::shared_ptr<score::PeerScore> peer_score,
       RouterCounters &counters,
-      log::SubLogger &log)
+      log::SubLogger &log,
+      PartialMessages *partial)
       : topic_(std::move(topic)),
         config_(config),
         connectivity_(connectivity),
@@ -240,7 +241,8 @@ namespace libp2p::protocol::gossip {
         counters_(counters),
         self_subscribed_(false),
         fanout_period_ends_(0),
-        log_(log) {}
+        log_(log),
+        partial_(partial) {}
 
   bool TopicSubscriptions::empty() const {
     return (not self_subscribed_)
@@ -297,6 +299,12 @@ namespace libp2p::protocol::gossip {
           if (ctx->dont_want.count(msg_id) != 0) {
             return;
           }
+          // it requested partial messages: the application sends it the
+          // parts (partial messages extension)
+          if (sendsPartialTo(ctx)) {
+            ++counters_.partial_full_forwards_skipped;
+            return;
+          }
           // tell the peer not to send us their copy back (v1.2); rides in
           // the same RPC as the forwarded message. NOTE 2026-09-10: an
           // LH-style separate-tiny-RPC-first variant was A/B-tested live and
@@ -324,6 +332,10 @@ namespace libp2p::protocol::gossip {
       for (const auto &ctx : peers) {
         assert(ctx->message_builder);
 
+        if (sendsPartialTo(ctx)) {
+          ++counters_.partial_ihaves_skipped;
+          continue;
+        }
         if (needToForward(ctx, from, origin)) {
           ctx->message_builder->addIHave(topic_, msg_id);
           connectivity_.peerIsWritable(ctx, true);
@@ -709,7 +721,13 @@ namespace libp2p::protocol::gossip {
     // subscribers, batched into one control message per peer (the old
     // per-message announce built 24 IHAVE entries per message on the hot
     // thread). seen_cache_ stores expiry = seen_at + seen_cache_lifetime.
-    if (self_subscribed_ && !subscribed_peers_.empty() && !seen_cache_.empty()) {
+    // The peers picked that requested partial messages get the partial
+    // messages of the groups we published instead (partial messages gossip),
+    // whether or not there are full messages to announce
+    const bool partial_gossip =
+        partial_ != nullptr && partial_->topicOptions(topic_).has_value();
+    if (self_subscribed_ && !subscribed_peers_.empty()
+        && (!seen_cache_.empty() || partial_gossip)) {
       const Time min_expiry = now + config_.seen_cache_lifetime_msec
           - Time{kGossipWindows * config_.heartbeat_interval_msec};
       std::vector<MessageId> recent;
@@ -721,10 +739,20 @@ namespace libp2p::protocol::gossip {
         }
         recent.push_back(it->second);
       }
-      if (!recent.empty()) {
+      if (!recent.empty() || partial_gossip) {
         auto gossip_peers = subscribed_peers_.selectRandomPeers(kDLazy);
         for (const auto &ctx : gossip_peers) {
           assert(ctx->message_builder);
+          if (sendsPartialTo(ctx)) {
+            partial_->addGossipPeer(topic_, ctx->peer_id);
+            if (!recent.empty()) {
+              ++counters_.partial_ihaves_skipped;
+            }
+            continue;
+          }
+          if (recent.empty()) {
+            continue;
+          }
           for (const auto &mid : recent) {
             ctx->message_builder->addIHave(topic_, mid);
           }
@@ -900,9 +928,12 @@ namespace libp2p::protocol::gossip {
       subscribed_peers_.insert(p);
     }
 
-    // announce the peer about messages available for the topic
-    for (const auto &[_, msg_id] : seen_cache_) {
-      p->message_builder->addIHave(topic_, msg_id);
+    // announce the peer about messages available for the topic, unless it
+    // requested partial messages
+    if (!sendsPartialTo(p)) {
+      for (const auto &[_, msg_id] : seen_cache_) {
+        p->message_builder->addIHave(topic_, msg_id);
+      }
     }
     connectivity_.peerIsWritable(p, false);
   }

@@ -300,9 +300,17 @@ namespace libp2p::protocol::gossip {
             return;
           }
           // it requested partial messages: the application sends it the
-          // parts (partial messages extension)
+          // parts (partial messages extension). Unless we requested partial
+          // messages too it still sends us full ones: it is told we have
+          // this one
           if (sendsPartialTo(ctx)) {
             ++counters_.partial_full_forwards_skipped;
+            counters_.partial_full_forward_bytes_skipped += msg->data.size();
+            if (announce_idontwant
+                && !partial_->announced(topic_).requests_partial) {
+              ctx->message_builder->addIDontWant(msg_id);
+              connectivity_.peerIsWritable(ctx, true);
+            }
             return;
           }
           // tell the peer not to send us their copy back (v1.2); rides in

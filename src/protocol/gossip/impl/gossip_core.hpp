@@ -289,7 +289,7 @@ namespace libp2p::protocol::gossip {
     void emitPartialGossip();
 
     /// The peers of the partial topic's mesh we exchange partial messages
-    /// with, or of its subscribers when we have no mesh (fanout)
+    /// with, or of its subscribers when we are not subscribed to it (fanout)
     std::vector<PeerContextPtr> partialPeers(const TopicId &topic) const;
 
     /// Incremented msg sequence number

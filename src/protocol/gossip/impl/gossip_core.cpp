@@ -495,7 +495,10 @@ namespace libp2p::protocol::gossip {
         peers.push_back(std::move(ctx.value()));
       }
     }
-    if (!peers.empty()) {
+    // a topic we subscribed to has a mesh, whose members are the only ones
+    // (go-libp2p-pubsub MeshPeers, consensus-specs partial columns "Mesh"):
+    // the subscribers outside it get partial message gossip at the heartbeat
+    if (isSubscribed(topic)) {
       return peers;
     }
     // no mesh (a topic we publish in without subscribing): up to D of the

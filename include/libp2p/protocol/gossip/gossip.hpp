@@ -346,9 +346,10 @@ namespace libp2p::protocol::gossip {
     uint64_t partial_rpcs_tx = 0;
     uint64_t partial_bytes_tx = 0;
     uint64_t partial_actions_dropped = 0;
-    /// Full messages not forwarded, and IHAVEs not sent, to peers that
-    /// requested partial messages on a topic where we send them
+    /// Full messages not forwarded, with their bytes, and IHAVEs not sent, to
+    /// peers that requested partial messages on a topic where we send them
     uint64_t partial_full_forwards_skipped = 0;
+    uint64_t partial_full_forward_bytes_skipped = 0;
     uint64_t partial_ihaves_skipped = 0;
   };
 

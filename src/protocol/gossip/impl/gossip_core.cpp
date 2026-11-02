@@ -292,6 +292,16 @@ namespace libp2p::protocol::gossip {
 
     MessageId msg_id = create_message_id_(msg->from, msg->seq_no, msg->data, msg->topic);
 
+    // A message already known (a peer's copy forwarded, being validated, or
+    // refused) is not published again: with a message ID of the content
+    // alone (eth2), a node that rebuilds a message it also received would
+    // forward it twice
+    if (msg_cache_.contains(msg_id) || pending_validations_.contains(msg_id)
+        || ignored_.contains(msg_id) || rejected_.contains(msg_id)) {
+      ++counters_.publish_known;
+      return false;
+    }
+
     [[maybe_unused]] bool inserted = msg_cache_.insert(msg, msg_id);
     assert(inserted);
 
@@ -301,6 +311,8 @@ namespace libp2p::protocol::gossip {
       local_subscriptions_->forwardMessage(msg, {});
     }
 
+    // the message goes out now, not with the next message or heartbeat
+    connectivity_->flush();
     return true;
   }
 

@@ -351,6 +351,8 @@ namespace libp2p::protocol::gossip {
     uint64_t partial_full_forwards_skipped = 0;
     uint64_t partial_full_forward_bytes_skipped = 0;
     uint64_t partial_ihaves_skipped = 0;
+    /// Messages not published as they were known already (Gossip::publish)
+    uint64_t publish_known = 0;
   };
 
   /// Gossip protocol interface
@@ -457,7 +459,9 @@ namespace libp2p::protocol::gossip {
     virtual Subscription subscribe(TopicSet topics,
                                    SubscriptionCallback callback) = 0;
 
-    /// Publishes to topics. Returns false if validation fails or not started
+    /// Publishes to topics. Returns false if validation fails, not started,
+    /// or the message is known already (received, being validated, refused
+    /// or published)
     virtual bool publish(TopicId topic, Bytes data) = 0;
 
     /// Peers that currently have a live gossip stream (silkworm addition:

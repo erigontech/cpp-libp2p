@@ -181,7 +181,26 @@ namespace libp2p::protocol::gossip {
 
     // N.B. errors, if any, will be passed later in async manner
     auto serialized = ctx->message_builder->serialize();
+    if (ctx->diag && serialized) {
+      ++ctx->diag->view.writes_tx;
+      ctx->diag->view.bytes_tx += serialized.value()->size();
+    }
     ctx->outbound_stream->write(std::move(serialized));
+  }
+
+  boost::optional<PeerContextPtr> Connectivity::knownPeer(
+      const peer::PeerId &id) const {
+    return all_peers_.find(id);
+  }
+
+  void Connectivity::dropDiagnostics(Time now) {
+    all_peers_.selectAll([&](const PeerContextPtr &ctx) {
+      if (ctx->diag && ctx->diag->disconnected != Time{0}
+          && now - ctx->diag->disconnected
+                 > config_.peer_diagnostics_keep_msec) {
+        ctx->diag.reset();
+      }
+    });
   }
 
   peer::ProtocolName Connectivity::getProtocolId() const {
@@ -234,6 +253,14 @@ namespace libp2p::protocol::gossip {
 
     stream_id = ctx->inbound_streams.size() + 1;
     is_new_connection = (stream_id == 1 && !ctx->outbound_stream);
+
+    if (config_.peer_diagnostics) {
+      auto &diag = beginDiagnostics(
+          *ctx, scheduler_->now(), config_.peer_diagnostics_keep_msec);
+      if (++diag.view.inbound_streams > 1) {
+        ++diag.view.inbound_reopens;
+      }
+    }
 
     auto gossip_stream = std::make_shared<Stream>(stream_id,
                                                   config_,
@@ -380,6 +407,22 @@ namespace libp2p::protocol::gossip {
 
     ctx->outbound_stream = std::move(gossip_stream);
 
+    if (config_.peer_diagnostics) {
+      auto &diag = beginDiagnostics(
+          *ctx, scheduler_->now(), config_.peer_diagnostics_keep_msec);
+      uint64_t opened = 0;
+      for (const auto &[_, count] : diag.view.outbound_streams) {
+        opened += count;
+      }
+      if (opened > 0) {
+        ++diag.view.outbound_reopens;
+      }
+      ++diag.view.outbound_streams[rstream.value().protocol];
+      if (advertise) {
+        ++diag.view.extensions_tx;
+      }
+    }
+
     if (is_new_connection) {
       connected_peers_.insert(ctx);
       connected_cb_(true, ctx);
@@ -459,6 +502,10 @@ namespace libp2p::protocol::gossip {
       return;
     }
     log_.info("stream error='{}', peer={}", event.error(), from->str);
+    if (from->diag) {
+      ++from->diag->view.stream_errors;
+      from->diag->view.last_stream_error = event.error().message();
+    }
 
     // TODO(artem): ban incoming peers for protocol violations etc. - v.1.1
 
@@ -532,6 +579,9 @@ namespace libp2p::protocol::gossip {
             boost::for_each(flat_changes, [this, &ctx](auto &&p) {
               ctx->message_builder->addSubscription(
                   p.first, p.second, partialOptions(ctx, p.second));
+              if (ctx->diag) {
+                ++ctx->diag->view.subscriptions_tx;
+              }
             });
             flush(ctx);
           });

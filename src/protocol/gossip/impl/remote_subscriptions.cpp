@@ -109,6 +109,7 @@ namespace libp2p::protocol::gossip {
     if (!res) {
       // we don't have this topic anymore
       peer->message_builder->addPrune(topic);
+      diagnosePrune(*peer, topic);
       connectivity_.peerIsWritable(peer, true);
       return;
     }

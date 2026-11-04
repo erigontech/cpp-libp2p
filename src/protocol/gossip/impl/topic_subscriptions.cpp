@@ -309,6 +309,7 @@ namespace libp2p::protocol::gossip {
             if (announce_idontwant
                 && !partial_->announced(topic_).requests_partial) {
               ctx->message_builder->addIDontWant(msg_id);
+              diagnoseIDontWant(*ctx, topic_);
               connectivity_.peerIsWritable(ctx, true);
             }
             return;
@@ -320,8 +321,10 @@ namespace libp2p::protocol::gossip {
           // +348ms to +665ms p50 (45min windows) — keep the piggyback.
           if (announce_idontwant) {
             ctx->message_builder->addIDontWant(msg_id);
+            diagnoseIDontWant(*ctx, topic_);
           }
           ctx->message_builder->addMessage(*msg, msg_id);
+          diagnoseMessage(*ctx, topic_, msg->data.size());
           ++lh_forwards_;
           if (isBeaconBlockTopicId(topic_)) {
             ++counters_.block_forwarded_to;
@@ -346,6 +349,7 @@ namespace libp2p::protocol::gossip {
         }
         if (needToForward(ctx, from, origin)) {
           ctx->message_builder->addIHave(topic_, msg_id);
+          diagnoseIHave(*ctx, topic_, msg_id, now);
           connectivity_.peerIsWritable(ctx, true);
         }
       }
@@ -763,6 +767,7 @@ namespace libp2p::protocol::gossip {
           }
           for (const auto &mid : recent) {
             ctx->message_builder->addIHave(topic_, mid);
+            diagnoseIHave(*ctx, topic_, mid, now);
           }
           connectivity_.peerIsWritable(ctx, false);
         }
@@ -939,8 +944,10 @@ namespace libp2p::protocol::gossip {
     // announce the peer about messages available for the topic, unless it
     // requested partial messages
     if (!sendsPartialTo(p)) {
+      const auto now = scheduler_.now();
       for (const auto &[_, msg_id] : seen_cache_) {
         p->message_builder->addIHave(topic_, msg_id);
+        diagnoseIHave(*p, topic_, msg_id, now, /*on_subscribe=*/true);
       }
     }
     connectivity_.peerIsWritable(p, false);
@@ -984,6 +991,7 @@ namespace libp2p::protocol::gossip {
       subscribed_peers_.insert(p);
       setBackoff(p, scheduler_.now() + kPruneBackoff);
       p->message_builder->addPrune(topic_, kPruneBackoffSec);
+      diagnosePrune(*p, topic_);
       connectivity_.peerIsWritable(p, true);
       return;
     }
@@ -1028,6 +1036,7 @@ namespace libp2p::protocol::gossip {
       // the refill must not GRAFT it inside the backoff the PRUNE announces
       setBackoff(p, scheduler_.now() + kPruneBackoff);
       p->message_builder->addPrune(topic_, kPruneBackoffSec);
+      diagnosePrune(*p, topic_);
       connectivity_.peerIsWritable(p, true);
     }
   }
@@ -1296,6 +1305,7 @@ namespace libp2p::protocol::gossip {
               std::chrono::duration_cast<std::chrono::nanoseconds>(scheduler_.now())});
     }
     p->message_builder->addGraft(topic_);
+    diagnoseGraft(*p, topic_);
     connectivity_.peerIsWritable(p, false);
     mesh_peers_.insert(p);
     p->mesh_since[topic_] = scheduler_.now();
@@ -1318,6 +1328,7 @@ namespace libp2p::protocol::gossip {
     // remote: the refill skips the peer until it expires
     setBackoff(p, scheduler_.now() + kPruneBackoff);
     p->message_builder->addPrune(topic_, kPruneBackoffSec);
+    diagnosePrune(*p, topic_);
     connectivity_.peerIsWritable(p, false);
     p->mesh_since.erase(topic_);
     subscribed_peers_.insert(p);

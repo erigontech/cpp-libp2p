@@ -140,6 +140,9 @@ namespace libp2p::protocol::gossip {
             if (auto options = partial_.announced(topic);
                 options.supports_sending_partial) {
               ctx->message_builder->addSubscription(true, topic, options);
+              if (ctx->diag) {
+                ++ctx->diag->view.subscriptions_tx;
+              }
             }
           }
         });
@@ -407,6 +410,10 @@ namespace libp2p::protocol::gossip {
   void GossipCore::onExtensions(const PeerContextPtr &from,
                                 const std::optional<PeerExtensions> &extensions,
                                 bool first_on_stream) {
+    if (from->diag && (extensions || !first_on_stream)) {
+      ++(first_on_stream ? from->diag->view.extensions_rx
+                         : from->diag->view.extensions_repeated_rx);
+    }
     if (!first_on_stream) {
       // gossipsub v1.3: in the first message on the stream and only there
       ++counters_.extensions_repeated;
@@ -583,6 +590,9 @@ namespace libp2p::protocol::gossip {
           group_id,
           parts ? action.partial_message : kNone,
           metadata ? action.parts_metadata : kNone);
+      if (ctx.value()->diag) {
+        ++ctx.value()->diag->topic(topic).partial;
+      }
       auto &state = group->peers[action.peer];
       state.requests_partial = partial_.mayReceiveParts(*ctx.value(), topic);
       if (metadata) {
@@ -625,6 +635,9 @@ namespace libp2p::protocol::gossip {
     assert(started_);
 
     log_.info("IHAVE from peer {} for topic {}", from->str, topic);
+    if (from->diag) {
+      ++from->diag->view.ihave_ids_rx;
+    }
     if (topic.ends_with("/beacon_block/ssz_snappy")) {
       ++from->block_ihaves_rx;
     } else if (topic.ends_with("/execution_payload/ssz_snappy")) {
@@ -639,6 +652,9 @@ namespace libp2p::protocol::gossip {
       log_.info("requesting IWANT msg_id={:x} from peer {}", msg_id, from->str);
 
       from->message_builder->addIWant(msg_id);
+      if (from->diag) {
+        ++from->diag->view.iwant_ids_tx;
+      }
       if (topic.ends_with("/beacon_block/ssz_snappy")) {
         ++counters_.block_iwants_sent;
       }
@@ -695,6 +711,9 @@ namespace libp2p::protocol::gossip {
       log_.info("IDONTWANT flowing: received_total={} (last from {})",
                 received_total, from->str);
     }
+    if (from->diag) {
+      ++from->diag->view.idontwant_rx;
+    }
     // A member sending IDONTWANT for the blocks or envelopes we hold has us
     // in its mesh (silkworm #149)
     if (auto msg = msg_cache_.getMessage(msg_id)) {
@@ -719,6 +738,38 @@ namespace libp2p::protocol::gossip {
     log_.info("IWANT from peer {} for msg_id={:x}", from->str, msg_id);
 
     auto msg_found = msg_cache_.getMessage(msg_id);
+    if (auto *diag = from->diag.get()) {
+      // a message it asked for later than its IWANT followup time after our
+      // IHAVE, or that we no longer have, is a broken promise (P7) there
+      auto &view = diag->view;
+      ++view.iwant_ids_rx;
+      const auto announced = diag->announcedAt(msg_id);
+      if (!msg_found) {
+        ++view.iwant_missed;
+        if (announced) {
+          ++view.iwant_missed_announced;
+        }
+      } else {
+        ++view.iwant_served;
+        view.iwant_served_bytes += msg_found.value()->data.size();
+        auto &topic = diag->topic(msg_found.value()->topic);
+        ++topic.messages;
+        topic.message_bytes += msg_found.value()->data.size();
+        if (!announced) {
+          ++view.iwant_unannounced;
+        } else {
+          const auto age = scheduler_->now() - *announced;
+          if (age > std::chrono::seconds(1)) {
+            ++view.iwant_after_1s;
+          }
+          if (age > std::chrono::seconds(3)) {
+            ++view.iwant_after_3s;
+          }
+          view.iwant_max_ms = std::max<uint64_t>(
+              view.iwant_max_ms, static_cast<uint64_t>(age.count()));
+        }
+      }
+    }
     if (msg_found) {
       from->message_builder->addMessage(*msg_found.value(), msg_id);
       connectivity_->peerIsWritable(from, true);
@@ -731,6 +782,10 @@ namespace libp2p::protocol::gossip {
     assert(started_);
 
     log_.info("GRAFT from peer {} for topic {}", from->str, topic);
+    if (from->diag) {
+      ++from->diag->view.graft_rx;
+      ++from->diag->topic(topic).graft_rx;
+    }
 
     remote_subscriptions_->onGraft(from, topic);
   }
@@ -741,6 +796,10 @@ namespace libp2p::protocol::gossip {
     assert(started_);
 
     log_.info("PRUNE from peer {} for topic {}, backoff={}s", from->str, topic, backoff_time);
+    if (from->diag) {
+      ++from->diag->view.prune_rx;
+      ++from->diag->topic(topic).prune_rx;
+    }
 
     remote_subscriptions_->onPrune(from, topic, backoff_time);
   }
@@ -797,6 +856,9 @@ namespace libp2p::protocol::gossip {
     assert(started_);
 
     ++from->messages_rx;
+    if (from->diag) {
+      ++from->diag->view.messages_rx;
+    }
 
     // do we need this message? Not on a topic we left: the remote peers still
     // subscribed to it keep its entry
@@ -1034,6 +1096,12 @@ namespace libp2p::protocol::gossip {
     // shift cache
     msg_cache_.shift();
 
+    // the per-peer diagnostics of the sessions that ended a while ago
+    if (config_.peer_diagnostics
+        && heartbeat_seq_ % kDiagnosticsSweepHeartbeats == 0) {
+      connectivity_->dropDiagnostics(scheduler_->now());
+    }
+
     // Decay and refresh the scores once per decay_interval (a slot)
     auto now = scheduler_->now();
     if (last_score_refresh_ == Time{} ||
@@ -1110,6 +1178,10 @@ namespace libp2p::protocol::gossip {
       }
       refreshConnectionInfo(ctx, true);
       log_.debug("peer {} connected", ctx->str);
+      if (config_.peer_diagnostics) {
+        beginDiagnostics(
+            *ctx, scheduler_->now(), config_.peer_diagnostics_keep_msec);
+      }
       // notify the new peer about all topics we subscribed to
       if (!local_subscriptions_->subscribedTo().empty()) {
         for (const auto &local_sub : local_subscriptions_->subscribedTo()) {
@@ -1119,6 +1191,9 @@ namespace libp2p::protocol::gossip {
               local_sub.first,
               ctx->partial_advertised ? partial_.announced(local_sub.first)
                                       : PartialTopicOptions{});
+          if (ctx->diag) {
+            ++ctx->diag->view.subscriptions_tx;
+          }
         }
         connectivity_->peerIsWritable(ctx, true);
         connectivity_->flush();
@@ -1131,9 +1206,36 @@ namespace libp2p::protocol::gossip {
       ctx->partial_advertised = false;
       ctx->partial_topics.clear();
       partial_.onPeerDisconnected(ctx->peer_id);
+      // kept a while: its Goodbye may be read after its streams closed
+      if (ctx->diag) {
+        ctx->diag->disconnected = scheduler_->now();
+      }
       log_.debug("peer {} disconnected", ctx->str);
       remote_subscriptions_->onPeerDisconnected(ctx);
     }
+  }
+
+  std::optional<PeerDiagnostics> GossipCore::peerDiagnostics(
+      const peer::PeerId &peer) const {
+    if (!connectivity_) {
+      return std::nullopt;
+    }
+    const auto ctx = connectivity_->knownPeer(peer);
+    if (!ctx || !ctx.value()->diag) {
+      return std::nullopt;
+    }
+    const auto &diag = *ctx.value()->diag;
+    const auto now = scheduler_->now();
+    if (diag.disconnected != Time{0}
+        && now - diag.disconnected > config_.peer_diagnostics_keep_msec) {
+      return std::nullopt;
+    }
+    auto view = diag.view;
+    view.connected = diag.disconnected == Time{0};
+    view.age = now - diag.started;
+    view.since_disconnect = view.connected ? Time{0} : now - diag.disconnected;
+    view.score = peer_score2_->score(peer);
+    return view;
   }
 
   PeerContextPtr GossipCore::connectedPeer(const peer::PeerId &peer) const {

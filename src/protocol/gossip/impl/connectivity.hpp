@@ -64,6 +64,13 @@ namespace libp2p::protocol::gossip {
     /// Returns connected peers
     const PeerSet &getConnectedPeers() const;
 
+    /// A peer known, connected or not
+    boost::optional<PeerContextPtr> knownPeer(const peer::PeerId &id) const;
+
+    /// Config::peer_diagnostics: frees the sessions that ended longer than
+    /// peer_diagnostics_keep_msec before \p now
+    void dropDiagnostics(Time now);
+
     /// Partial messages extension: the options our subscriptions to a topic
     /// announce to the peers we advertised the extension to, and what to do
     /// when we advertise it to a peer already connected (the subscriptions it

@@ -153,6 +153,13 @@ namespace libp2p::protocol::gossip {
     /// for every message published
     bool strict_no_sign = false;
 
+    /// Keep per-peer diagnostics (peerDiagnostics): counters of what we sent
+    /// the peer and it sent us, from its first gossip stream until
+    /// peer_diagnostics_keep_msec after its last. Off, nothing is counted
+    bool peer_diagnostics = false;
+    std::chrono::milliseconds peer_diagnostics_keep_msec{
+        std::chrono::minutes(2)};
+
     /// gossipsub v1.3 partial messages extension (libp2p/specs
     /// pubsub/gossipsub/partial-messages.md; EIP-8136 for the eth2 data
     /// columns): advertised in the Extensions control message that opens the
@@ -229,6 +236,88 @@ namespace libp2p::protocol::gossip {
     /// parts metadata to send, empty for none: not sent unless the peer
     /// supports sending partial messages on the topic
     Bytes parts_metadata;
+  };
+
+  /// Config::peer_diagnostics: what the router exchanged with a peer over its
+  /// session, from its first gossip stream until a while after its last. A
+  /// reconnection within Config::peer_diagnostics_keep_msec continues the
+  /// session
+  struct PeerDiagnostics {
+    /// What we sent the peer on a topic, and the mesh changes it sent us
+    struct Topic {
+      /// Full messages (forwards, publishes, IWANT answers) and their bytes
+      uint64_t messages = 0;
+      uint64_t message_bytes = 0;
+      /// Partial messages RPCs (the partial messages extension)
+      uint64_t partial = 0;
+      uint64_t idontwant = 0;
+      /// Message IDs announced in IHAVEs, of those when it subscribed
+      uint64_t ihave_ids = 0;
+      uint64_t ihave_ids_on_subscribe = 0;
+      uint64_t graft = 0;
+      uint64_t prune = 0;
+      uint64_t graft_rx = 0;
+      uint64_t prune_rx = 0;
+    };
+
+    bool connected = false;
+    /// Since the session began, and since the peer disconnected (zero while
+    /// connected)
+    std::chrono::milliseconds age{0};
+    std::chrono::milliseconds since_disconnect{0};
+    /// Gossip connections of the session (more than one: it reconnected)
+    uint64_t sessions = 0;
+    /// The score we give it now
+    double score = 0;
+
+    /// IHAVE message IDs we sent it, and IWANT message IDs it sent us: those
+    /// we served, of them how many came more than 1 s and 3 s after our first
+    /// IHAVE of the ID to it (and the latest, in ms), those we served without
+    /// our IHAVE on record (unknown age), and those we no longer had (of them
+    /// how many we had announced to it)
+    uint64_t ihave_ids_tx = 0;
+    uint64_t iwant_ids_rx = 0;
+    uint64_t iwant_served = 0;
+    uint64_t iwant_served_bytes = 0;
+    uint64_t iwant_after_1s = 0;
+    uint64_t iwant_after_3s = 0;
+    uint64_t iwant_max_ms = 0;
+    uint64_t iwant_unannounced = 0;
+    uint64_t iwant_missed = 0;
+    uint64_t iwant_missed_announced = 0;
+
+    /// Control messages: IWANT IDs we sent, IHAVE IDs and IDONTWANTs it sent;
+    /// GRAFT and PRUNE both ways; the Extensions control messages we sent and
+    /// it sent (those not first on a stream, a P7 penalty, apart); the
+    /// subscriptions we announced to it
+    uint64_t iwant_ids_tx = 0;
+    uint64_t ihave_ids_rx = 0;
+    uint64_t idontwant_rx = 0;
+    uint64_t idontwant_tx = 0;
+    uint64_t graft_tx = 0;
+    uint64_t prune_tx = 0;
+    uint64_t graft_rx = 0;
+    uint64_t prune_rx = 0;
+    uint64_t extensions_tx = 0;
+    uint64_t extensions_rx = 0;
+    uint64_t extensions_repeated_rx = 0;
+    uint64_t subscriptions_tx = 0;
+
+    /// Streams: ours to it per protocol, its to us, those opened after the
+    /// first of the session (reopens), the errors that closed them (the last
+    /// one's text); the writes (batches of RPC frames) and bytes we sent it
+    std::map<std::string, uint64_t> outbound_streams;
+    uint64_t inbound_streams = 0;
+    uint64_t outbound_reopens = 0;
+    uint64_t inbound_reopens = 0;
+    uint64_t stream_errors = 0;
+    std::string last_stream_error;
+    uint64_t writes_tx = 0;
+    uint64_t bytes_tx = 0;
+    /// Messages it sent us
+    uint64_t messages_rx = 0;
+
+    std::map<TopicId, Topic> topics;
   };
 
   /// Decides what to send in a group, from the peers' states, which it may
@@ -501,6 +590,12 @@ namespace libp2p::protocol::gossip {
 
     /// Returns the router counters and resets them (on the gossip thread)
     virtual RouterCounters takeCounters() = 0;
+
+    /// Config::peer_diagnostics: the session of \p peer so far, none if it
+    /// has none (never connected, or disconnected longer than
+    /// peer_diagnostics_keep_msec ago). On the gossip thread
+    virtual std::optional<PeerDiagnostics> peerDiagnostics(
+        const peer::PeerId &peer) const = 0;
 
     /// Sizes the score parameters of the eth2 topics to the network, as
     /// Lighthouse does once per epoch: the attestation subnets expect message

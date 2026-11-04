@@ -6,8 +6,10 @@
 
 #pragma once
 
+#include <array>
 #include <deque>
 #include <map>
+#include <memory>
 #include <set>
 #include <unordered_map>
 
@@ -19,6 +21,28 @@ namespace libp2p::protocol::gossip {
 
   class MessageBuilder;
   class Stream;
+
+  /// Config::peer_diagnostics: the counters of a peer's session, and the
+  /// message IDs we announced to it with when (silkworm #167)
+  struct PeerDiagnosticsState {
+    PeerDiagnostics view;
+    /// Begun at, disconnected at (zero while connected)
+    Time started{0};
+    Time disconnected{0};
+
+    /// The first IHAVE of each of the last kAnnounced message IDs (by their
+    /// first 8 bytes) we sent the peer: the age of the IDs it asks for
+    static constexpr size_t kAnnounced = 512;
+    std::unordered_map<uint64_t, Time> announced;
+    std::array<uint64_t, kAnnounced> announced_order{};
+    size_t announced_next = 0;
+
+    void announce(const MessageId &msg_id, Time now);
+    std::optional<Time> announcedAt(const MessageId &msg_id) const;
+    PeerDiagnostics::Topic &topic(const TopicId &id) {
+      return view.topics[id];
+    }
+  };
 
   /// Data related to peer needed by pub-sub protocols
   struct PeerContext {
@@ -99,6 +123,9 @@ namespace libp2p::protocol::gossip {
     bool partial_advertised = false;
     std::map<TopicId, PartialTopicOptions> partial_topics;
 
+    /// Config::peer_diagnostics: its session, none outside one
+    std::unique_ptr<PeerDiagnosticsState> diag;
+
     ~PeerContext() = default;
     PeerContext(PeerContext &&) = delete;
     PeerContext(const PeerContext &) = delete;
@@ -110,6 +137,54 @@ namespace libp2p::protocol::gossip {
     LIBP2P_METRICS_INSTANCE_COUNT_IF_ENABLED(
         libp2p::protocol::gossip::PeerContext);
   };
+
+  /// The diagnostics of \p ctx's session, begun (or continued) at \p now:
+  /// a new one past \p keep after the previous one's disconnection
+  PeerDiagnosticsState &beginDiagnostics(PeerContext &ctx, Time now, Time keep);
+
+  /// What we queue for a peer, counted in its session if it has one
+  inline void diagnoseMessage(PeerContext &ctx,
+                              const TopicId &topic,
+                              size_t bytes) {
+    if (auto *diag = ctx.diag.get()) {
+      auto &counters = diag->topic(topic);
+      ++counters.messages;
+      counters.message_bytes += bytes;
+    }
+  }
+  inline void diagnoseIDontWant(PeerContext &ctx, const TopicId &topic) {
+    if (auto *diag = ctx.diag.get()) {
+      ++diag->view.idontwant_tx;
+      ++diag->topic(topic).idontwant;
+    }
+  }
+  inline void diagnoseIHave(PeerContext &ctx,
+                            const TopicId &topic,
+                            const MessageId &msg_id,
+                            Time now,
+                            bool on_subscribe = false) {
+    if (auto *diag = ctx.diag.get()) {
+      ++diag->view.ihave_ids_tx;
+      auto &counters = diag->topic(topic);
+      ++counters.ihave_ids;
+      if (on_subscribe) {
+        ++counters.ihave_ids_on_subscribe;
+      }
+      diag->announce(msg_id, now);
+    }
+  }
+  inline void diagnoseGraft(PeerContext &ctx, const TopicId &topic) {
+    if (auto *diag = ctx.diag.get()) {
+      ++diag->view.graft_tx;
+      ++diag->topic(topic).graft;
+    }
+  }
+  inline void diagnosePrune(PeerContext &ctx, const TopicId &topic) {
+    if (auto *diag = ctx.diag.get()) {
+      ++diag->view.prune_tx;
+      ++diag->topic(topic).prune;
+    }
+  }
 
   /// Operators needed to place PeerContextPtr into PeerSet but use
   /// const peer::PeerId& as a key

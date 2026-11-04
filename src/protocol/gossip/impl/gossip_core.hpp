@@ -78,6 +78,8 @@ namespace libp2p::protocol::gossip {
     bool graftPeer(const TopicId &topic, const peer::PeerId &peer) override;
     bool prunePeer(const TopicId &topic, const peer::PeerId &peer) override;
     RouterCounters takeCounters() override;
+    std::optional<PeerDiagnostics> peerDiagnostics(
+        const peer::PeerId &peer) const override;
     void setNetworkSize(size_t active_validators,
                         uint64_t current_slot) override;
     bool setPartialTopic(const TopicId &topic,
@@ -202,6 +204,9 @@ namespace libp2p::protocol::gossip {
     /// Heartbeats between two refreshes of the connection info of every
     /// connected peer: the close of one of several connections fires no event
     static constexpr uint64_t kConnectionInfoSweepHeartbeats = 16;
+    /// Heartbeats between two sweeps of the per-peer diagnostics of the
+    /// sessions that ended (Config::peer_diagnostics)
+    static constexpr uint64_t kDiagnosticsSweepHeartbeats = 64;
     /// Peers dialed from a PRUNE peer exchange, until they connect, at most
     /// kMaxPxDialed for kPxDialedTtl
     static constexpr size_t kMaxPxDialed = 256;

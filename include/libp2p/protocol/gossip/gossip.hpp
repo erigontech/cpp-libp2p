@@ -143,6 +143,16 @@ namespace libp2p::protocol::gossip {
     /// Sign published messages
     bool sign_messages = false;
 
+    /// Publish messages without author fields: no from, seqno, signature nor
+    /// key (the StrictNoSign signature policy, which eth2 requires). The
+    /// StrictNoSign receivers reject a message carrying any of them, before
+    /// they look whether they have it: go-libp2p-pubsub with
+    /// RejectUnexpectedAuthInfo, rust-libp2p in its Anonymous mode. Overrides
+    /// sign_messages. The message IDs must then come from the content
+    /// (setMessageIdFn): the default ID, of from and seqno, would be the same
+    /// for every message published
+    bool strict_no_sign = false;
+
     /// gossipsub v1.3 partial messages extension (libp2p/specs
     /// pubsub/gossipsub/partial-messages.md; EIP-8136 for the eth2 data
     /// columns): advertised in the Extensions control message that opens the

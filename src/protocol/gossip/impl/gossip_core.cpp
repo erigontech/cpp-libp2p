@@ -280,10 +280,18 @@ namespace libp2p::protocol::gossip {
       return false;
     }
 
-    auto msg = std::make_shared<TopicMessage>(
-        local_peer_id_, ++msg_seq_, std::move(data), std::move(topic));
+    // StrictNoSign (eth2): no author fields at all, the receivers reject a
+    // message with any of them as invalid
+    TopicMessage::Ptr msg;
+    if (config_.strict_no_sign) {
+      msg = std::make_shared<TopicMessage>(Bytes{}, Bytes{}, std::move(data));
+      msg->topic = std::move(topic);
+    } else {
+      msg = std::make_shared<TopicMessage>(
+          local_peer_id_, ++msg_seq_, std::move(data), std::move(topic));
+    }
 
-    if (config_.sign_messages) {
+    if (config_.sign_messages && !config_.strict_no_sign) {
       auto res = signMessage(*msg);
       if (!res) {
         log_.warn("signMessage error: {}", res.error());

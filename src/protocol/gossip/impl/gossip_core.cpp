@@ -757,6 +757,7 @@ namespace libp2p::protocol::gossip {
         diag->pushed(msg_found.value()->topic,
                      PeerDiagnostics::PushKind::kIWant,
                      msg_found.value()->data.size(),
+                     msg_id,
                      scheduler_->now());
         if (from->outbound_stream) {
           view.iwant_backlog_max_bytes =
@@ -1246,6 +1247,13 @@ namespace libp2p::protocol::gossip {
     view.score = peer_score2_->score(peer);
     if (diag.prune_burst_at != Time{0}) {
       view.prune_burst_age = now - diag.prune_burst_at;
+    }
+    // the data of those still cached, for the caller to read them
+    view.sent_recently = diag.sentRecently(now);
+    for (auto &push : view.sent_recently) {
+      if (auto msg = msg_cache_.getMessage(push.id)) {
+        push.data = std::shared_ptr<const Bytes>(*msg, &(*msg)->data);
+      }
     }
     return view;
   }

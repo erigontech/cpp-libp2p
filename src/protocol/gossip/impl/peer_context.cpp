@@ -5,6 +5,9 @@
  */
 
 #include "peer_context.hpp"
+
+#include <algorithm>
+
 #include "message_builder.hpp"
 
 namespace libp2p::protocol::gossip {
@@ -49,13 +52,37 @@ namespace libp2p::protocol::gossip {
   void PeerDiagnosticsState::pushed(const TopicId &id,
                                     PeerDiagnostics::PushKind kind,
                                     size_t bytes,
+                                    const MessageId &msg_id,
                                     Time now) {
     const auto entry = view.topics.try_emplace(id).first;
     auto &counters = entry->second;
     ++counters.messages;
     counters.message_bytes += bytes;
-    pushes[pushes_next] = {.at = now, .topic = &entry->first, .kind = kind};
+    auto &record = pushes[pushes_next];
+    record.at = now;
+    record.topic = &entry->first;
+    record.kind = kind;
+    record.id_size = static_cast<uint8_t>(
+        std::min(msg_id.size(), PeerDiagnostics::kPushIdBytes));
+    std::copy_n(msg_id.begin(), record.id_size, record.id.begin());
     pushes_next = (pushes_next + 1) % kPushes;
+  }
+
+  std::vector<PeerDiagnostics::Push> PeerDiagnosticsState::sentRecently(
+      Time now) const {
+    std::vector<PeerDiagnostics::Push> sent;
+    for (size_t back = 1; back <= kPushes; ++back) {
+      const auto &record = pushes[(pushes_next + kPushes - back) % kPushes];
+      if (record.topic == nullptr
+          || now - record.at > PeerDiagnostics::kSentRecently) {
+        break;
+      }
+      sent.push_back({.topic = *record.topic,
+                      .kind = record.kind,
+                      .before = now - record.at,
+                      .id = record.messageId()});
+    }
+    return sent;
   }
 
   void PeerDiagnosticsState::pruneReceived(Time now) {
@@ -76,7 +103,8 @@ namespace libp2p::protocol::gossip {
       }
       view.pushes_before_prune.push_back({.topic = *record.topic,
                                           .kind = record.kind,
-                                          .before = now - record.at});
+                                          .before = now - record.at,
+                                          .id = record.messageId()});
     }
   }
 

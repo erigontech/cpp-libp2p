@@ -331,8 +331,12 @@ namespace libp2p::protocol::gossip {
             diagnoseIDontWant(*ctx, topic_);
           }
           ctx->message_builder->addMessage(*msg, msg_id);
-          diagnoseMessage(
-              *ctx, topic_, msg->data.size(), pushKind(from), scheduler_.now());
+          diagnoseMessage(*ctx,
+                          topic_,
+                          msg->data.size(),
+                          msg_id,
+                          pushKind(from),
+                          scheduler_.now());
           ++lh_forwards_;
           if (isBeaconBlockTopicId(topic_)) {
             ++counters_.block_forwarded_to;

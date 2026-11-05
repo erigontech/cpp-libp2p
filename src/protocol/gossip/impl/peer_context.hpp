@@ -38,11 +38,20 @@ namespace libp2p::protocol::gossip {
     size_t announced_next = 0;
 
     /// The last kPushes full messages we sent the peer, for its PRUNE bursts
+    /// and its Goodbye (PeerDiagnostics::sent_recently)
     struct PushRecord {
       Time at{0};
       /// A key of view.topics, whose nodes stay put
       const TopicId *topic = nullptr;
       PeerDiagnostics::PushKind kind = PeerDiagnostics::PushKind::kForward;
+      /// The message ID, its first id_size bytes, in place: one is recorded
+      /// for every message to every peer
+      std::array<uint8_t, PeerDiagnostics::kPushIdBytes> id{};
+      uint8_t id_size = 0;
+
+      Bytes messageId() const {
+        return Bytes(id.begin(), id.begin() + id_size);
+      }
     };
     static constexpr size_t kPushes = 32;
     std::array<PushRecord, kPushes> pushes{};
@@ -57,11 +66,16 @@ namespace libp2p::protocol::gossip {
     PeerDiagnostics::Topic &topic(const TopicId &id) {
       return view.topics[id];
     }
-    /// A full message of \p bytes we sent the peer on \p id at \p now
+    /// A full message of \p bytes, \p msg_id, we sent the peer on \p id at
+    /// \p now
     void pushed(const TopicId &id,
                 PeerDiagnostics::PushKind kind,
                 size_t bytes,
+                const MessageId &msg_id,
                 Time now);
+    /// The messages we sent it within PeerDiagnostics::kSentRecently before
+    /// \p now, the latest first, without their data
+    std::vector<PeerDiagnostics::Push> sentRecently(Time now) const;
     /// A PRUNE it sent us at \p now
     void pruneReceived(Time now);
   };
@@ -168,10 +182,11 @@ namespace libp2p::protocol::gossip {
   inline void diagnoseMessage(PeerContext &ctx,
                               const TopicId &topic,
                               size_t bytes,
+                              const MessageId &msg_id,
                               PeerDiagnostics::PushKind kind,
                               Time now) {
     if (auto *diag = ctx.diag.get()) {
-      diag->pushed(topic, kind, bytes, now);
+      diag->pushed(topic, kind, bytes, msg_id, now);
     }
   }
   inline void diagnoseIDontWant(PeerContext &ctx, const TopicId &topic) {

@@ -9,6 +9,7 @@
 #include <chrono>
 #include <functional>
 #include <map>
+#include <memory>
 #include <optional>
 #include <set>
 #include <string>
@@ -293,12 +294,24 @@ namespace libp2p::protocol::gossip {
     /// How we sent it a full message: forwarded, published by us, or as the
     /// answer to its IWANT
     enum class PushKind : uint8_t { kForward, kPublish, kIWant };
-    /// A full message we sent it, \p before its last PRUNE burst
+    /// A full message we sent it, \p before its last PRUNE burst (or before
+    /// the view was taken, in sent_recently). Its message ID, at most
+    /// kPushIdBytes of it, and in sent_recently its data while we still
+    /// cache the message (null after)
+    static constexpr size_t kPushIdBytes = 20;
     struct Push {
       TopicId topic;
       PushKind kind = PushKind::kForward;
       std::chrono::milliseconds before{0};
+      Bytes id;
+      std::shared_ptr<const Bytes> data;
     };
+    /// The full messages we sent it within kSentRecently before the view was
+    /// taken, the latest first, at most 32: what a peer that says Goodbye for
+    /// its score of us could have rejected (P4), whether or not it pruned us
+    /// first (silkworm #167)
+    static constexpr std::chrono::milliseconds kSentRecently{120'000};
+    std::vector<Push> sent_recently;
     /// Its last PRUNE burst: the PRUNEs it sent us within a second of each
     /// other. A go or rust heartbeat prunes a peer whose score turned negative
     /// from all its meshes at once, which is how an invalid message (P4) we

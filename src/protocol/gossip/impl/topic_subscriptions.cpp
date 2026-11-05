@@ -117,6 +117,13 @@ namespace libp2p::protocol::gossip {
       return topic.ends_with("/execution_payload/ssz_snappy");
     }
 
+    /// How a message received \p from a peer, or published by us, is sent
+    PeerDiagnostics::PushKind pushKind(
+        const boost::optional<PeerContextPtr> &from) {
+      return from.has_value() ? PeerDiagnostics::PushKind::kForward
+                              : PeerDiagnostics::PushKind::kPublish;
+    }
+
     // A peer's first copies, all copies and IHAVEs of the messages of the
     // beacon_block or execution_payload topic (silkworm #149)
     struct TopicDeliveries {
@@ -324,7 +331,8 @@ namespace libp2p::protocol::gossip {
             diagnoseIDontWant(*ctx, topic_);
           }
           ctx->message_builder->addMessage(*msg, msg_id);
-          diagnoseMessage(*ctx, topic_, msg->data.size());
+          diagnoseMessage(
+              *ctx, topic_, msg->data.size(), pushKind(from), scheduler_.now());
           ++lh_forwards_;
           if (isBeaconBlockTopicId(topic_)) {
             ++counters_.block_forwarded_to;

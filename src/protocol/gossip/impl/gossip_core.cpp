@@ -739,8 +739,10 @@ namespace libp2p::protocol::gossip {
 
     auto msg_found = msg_cache_.getMessage(msg_id);
     if (auto *diag = from->diag.get()) {
-      // a message it asked for later than its IWANT followup time after our
-      // IHAVE, or that we no longer have, is a broken promise (P7) there
+      // a message we no longer have is a broken promise (P7) there, as is an
+      // answer that reaches it past its IWANT followup time: the answer
+      // queues behind the bytes still to be written to it. The age of the
+      // ID since our first IHAVE of it is not the answer's delay
       auto &view = diag->view;
       ++view.iwant_ids_rx;
       const auto announced = diag->announcedAt(msg_id);
@@ -752,9 +754,15 @@ namespace libp2p::protocol::gossip {
       } else {
         ++view.iwant_served;
         view.iwant_served_bytes += msg_found.value()->data.size();
-        auto &topic = diag->topic(msg_found.value()->topic);
-        ++topic.messages;
-        topic.message_bytes += msg_found.value()->data.size();
+        diag->pushed(msg_found.value()->topic,
+                     PeerDiagnostics::PushKind::kIWant,
+                     msg_found.value()->data.size(),
+                     scheduler_->now());
+        if (from->outbound_stream) {
+          view.iwant_backlog_max_bytes =
+              std::max<uint64_t>(view.iwant_backlog_max_bytes,
+                                 from->outbound_stream->backlogBytes());
+        }
         if (!announced) {
           ++view.iwant_unannounced;
         } else {
@@ -799,6 +807,7 @@ namespace libp2p::protocol::gossip {
     if (from->diag) {
       ++from->diag->view.prune_rx;
       ++from->diag->topic(topic).prune_rx;
+      from->diag->pruneReceived(scheduler_->now());
     }
 
     remote_subscriptions_->onPrune(from, topic, backoff_time);
@@ -1235,6 +1244,9 @@ namespace libp2p::protocol::gossip {
     view.age = now - diag.started;
     view.since_disconnect = view.connected ? Time{0} : now - diag.disconnected;
     view.score = peer_score2_->score(peer);
+    if (diag.prune_burst_at != Time{0}) {
+      view.prune_burst_age = now - diag.prune_burst_at;
+    }
     return view;
   }
 

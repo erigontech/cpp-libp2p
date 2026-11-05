@@ -274,7 +274,10 @@ namespace libp2p::protocol::gossip {
     /// we served, of them how many came more than 1 s and 3 s after our first
     /// IHAVE of the ID to it (and the latest, in ms), those we served without
     /// our IHAVE on record (unknown age), and those we no longer had (of them
-    /// how many we had announced to it)
+    /// how many we had announced to it). Those ages are not how long the
+    /// answers took: an IWANT promise runs from the IWANT (3 s in go and
+    /// rust), and the answers queue at once behind the bytes still to be
+    /// written to the peer, the most of which is iwant_backlog_max_bytes
     uint64_t ihave_ids_tx = 0;
     uint64_t iwant_ids_rx = 0;
     uint64_t iwant_served = 0;
@@ -285,6 +288,27 @@ namespace libp2p::protocol::gossip {
     uint64_t iwant_unannounced = 0;
     uint64_t iwant_missed = 0;
     uint64_t iwant_missed_announced = 0;
+    uint64_t iwant_backlog_max_bytes = 0;
+
+    /// How we sent it a full message: forwarded, published by us, or as the
+    /// answer to its IWANT
+    enum class PushKind : uint8_t { kForward, kPublish, kIWant };
+    /// A full message we sent it, \p before its last PRUNE burst
+    struct Push {
+      TopicId topic;
+      PushKind kind = PushKind::kForward;
+      std::chrono::milliseconds before{0};
+    };
+    /// Its last PRUNE burst: the PRUNEs it sent us within a second of each
+    /// other. A go or rust heartbeat prunes a peer whose score turned negative
+    /// from all its meshes at once, which is how an invalid message (P4) we
+    /// sent it shows (silkworm #167). The topics it pruned, how long ago the
+    /// first PRUNE came (none yet: nullopt), and the messages we sent it within
+    /// kPushesBeforePrune before that PRUNE, the latest first
+    static constexpr std::chrono::milliseconds kPushesBeforePrune{10'000};
+    uint64_t prune_burst_topics = 0;
+    std::optional<std::chrono::milliseconds> prune_burst_age;
+    std::vector<Push> pushes_before_prune;
 
     /// Control messages: IWANT IDs we sent, IHAVE IDs and IDONTWANTs it sent;
     /// GRAFT and PRUNE both ways; the Extensions control messages we sent and

@@ -46,6 +46,40 @@ namespace libp2p::protocol::gossip {
     announced_next = (announced_next + 1) % kAnnounced;
   }
 
+  void PeerDiagnosticsState::pushed(const TopicId &id,
+                                    PeerDiagnostics::PushKind kind,
+                                    size_t bytes,
+                                    Time now) {
+    const auto entry = view.topics.try_emplace(id).first;
+    auto &counters = entry->second;
+    ++counters.messages;
+    counters.message_bytes += bytes;
+    pushes[pushes_next] = {.at = now, .topic = &entry->first, .kind = kind};
+    pushes_next = (pushes_next + 1) % kPushes;
+  }
+
+  void PeerDiagnosticsState::pruneReceived(Time now) {
+    // a heartbeat's PRUNEs come in one RPC
+    if (prune_burst_at != Time{0} && now - prune_burst_at <= kPruneBurst) {
+      ++view.prune_burst_topics;
+      return;
+    }
+    prune_burst_at = now;
+    view.prune_burst_topics = 1;
+    view.pushes_before_prune.clear();
+    // the latest first, back to kPushesBeforePrune before the PRUNE
+    for (size_t back = 1; back <= kPushes; ++back) {
+      const auto &record = pushes[(pushes_next + kPushes - back) % kPushes];
+      if (record.topic == nullptr
+          || now - record.at > PeerDiagnostics::kPushesBeforePrune) {
+        break;
+      }
+      view.pushes_before_prune.push_back({.topic = *record.topic,
+                                          .kind = record.kind,
+                                          .before = now - record.at});
+    }
+  }
+
   std::optional<Time> PeerDiagnosticsState::announcedAt(
       const MessageId &msg_id) const {
     const auto it = announced.find(idPrefix(msg_id));

@@ -37,11 +37,33 @@ namespace libp2p::protocol::gossip {
     std::array<uint64_t, kAnnounced> announced_order{};
     size_t announced_next = 0;
 
+    /// The last kPushes full messages we sent the peer, for its PRUNE bursts
+    struct PushRecord {
+      Time at{0};
+      /// A key of view.topics, whose nodes stay put
+      const TopicId *topic = nullptr;
+      PeerDiagnostics::PushKind kind = PeerDiagnostics::PushKind::kForward;
+    };
+    static constexpr size_t kPushes = 32;
+    std::array<PushRecord, kPushes> pushes{};
+    size_t pushes_next = 0;
+    /// The PRUNEs within kPruneBurst of the first make a burst, at
+    /// prune_burst_at (zero: none yet)
+    static constexpr Time kPruneBurst{1'000};
+    Time prune_burst_at{0};
+
     void announce(const MessageId &msg_id, Time now);
     std::optional<Time> announcedAt(const MessageId &msg_id) const;
     PeerDiagnostics::Topic &topic(const TopicId &id) {
       return view.topics[id];
     }
+    /// A full message of \p bytes we sent the peer on \p id at \p now
+    void pushed(const TopicId &id,
+                PeerDiagnostics::PushKind kind,
+                size_t bytes,
+                Time now);
+    /// A PRUNE it sent us at \p now
+    void pruneReceived(Time now);
   };
 
   /// Data related to peer needed by pub-sub protocols
@@ -145,11 +167,11 @@ namespace libp2p::protocol::gossip {
   /// What we queue for a peer, counted in its session if it has one
   inline void diagnoseMessage(PeerContext &ctx,
                               const TopicId &topic,
-                              size_t bytes) {
+                              size_t bytes,
+                              PeerDiagnostics::PushKind kind,
+                              Time now) {
     if (auto *diag = ctx.diag.get()) {
-      auto &counters = diag->topic(topic);
-      ++counters.messages;
-      counters.message_bytes += bytes;
+      diag->pushed(topic, kind, bytes, now);
     }
   }
   inline void diagnoseIDontWant(PeerContext &ctx, const TopicId &topic) {

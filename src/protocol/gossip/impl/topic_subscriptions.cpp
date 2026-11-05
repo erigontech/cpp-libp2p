@@ -954,10 +954,20 @@ namespace libp2p::protocol::gossip {
     }
 
     // announce the peer about messages available for the topic, unless it
-    // requested partial messages
+    // requested partial messages: those of the spec's gossip window (the
+    // last kGossipWindows heartbeats), as a heartbeat would. Not the whole
+    // seen cache, up to seen_cache_limit IDs per topic of the last
+    // seen_cache_lifetime (90 s): a new peer asked for every one it had
+    // missed, old messages a peer relayed included (silkworm #167, Sepolia
+    // S93: columns 2.6 days old asked for at once by peers just connected)
     if (!sendsPartialTo(p)) {
       const auto now = scheduler_.now();
-      for (const auto &[_, msg_id] : seen_cache_) {
+      const Time min_expiry = now + config_.seen_cache_lifetime_msec
+          - Time{kGossipWindows * config_.heartbeat_interval_msec};
+      for (const auto &[expiry, msg_id] : seen_cache_) {
+        if (expiry < min_expiry) {
+          continue;
+        }
         p->message_builder->addIHave(topic_, msg_id);
         diagnoseIHave(*p, topic_, msg_id, now, /*on_subscribe=*/true);
       }

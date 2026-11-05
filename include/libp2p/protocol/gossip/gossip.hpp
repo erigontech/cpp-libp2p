@@ -100,6 +100,12 @@ namespace libp2p::protocol::gossip {
     /// (ValidationResult::kDrop)
     size_t max_pending_validations = 4096;
 
+    /// Messages a validator held (ValidationResult::kHold), delivered but not
+    /// forwarded yet: at most max_held_messages of them, each for held_msec
+    /// at most, after which forwardHeld() no longer finds it
+    size_t max_held_messages = 512;
+    std::chrono::milliseconds held_msec{std::chrono::seconds(24)};
+
     /// Heartbeat interval
     std::chrono::milliseconds heartbeat_interval_msec{1000};
 
@@ -489,6 +495,11 @@ namespace libp2p::protocol::gossip {
     uint64_t partial_ihaves_skipped = 0;
     /// Messages not published as they were known already (Gossip::publish)
     uint64_t publish_known = 0;
+    /// Messages a validator held (ValidationResult::kHold): delivered, then
+    /// forwarded by forwardHeld(), or dropped unforwarded when they expired
+    uint64_t held = 0;
+    uint64_t held_forwarded = 0;
+    uint64_t held_expired = 0;
   };
 
   /// Gossip protocol interface
@@ -521,6 +532,9 @@ namespace libp2p::protocol::gossip {
       /// locally published messages). Under eth2 StrictNoSign 'from' is
       /// empty, so this is the only usable per-peer attribution.
       const std::string &delivered_by;
+      /// Held by its validator (ValidationResult::kHold): delivered, but not
+      /// forwarded until the application calls forwardHeld() for it
+      bool held = false;
     };
 
     /// Validator of messages arriving from the wire
@@ -541,6 +555,13 @@ namespace libp2p::protocol::gossip {
       /// message: a later copy is validated (the validator could not take
       /// this one, e.g. its queue was full)
       kDrop,
+      /// not valid yet, not invalid (e.g. an eth2 message ahead of the block
+      /// it refers to, which the spec IGNOREs and the application queues):
+      /// delivered to the subscribers with Message::held, but neither
+      /// forwarded, cached for IWANT nor scored, as kIgnore, and later copies
+      /// are dropped as duplicates. forwardHeld() forwards it once the
+      /// application validated it (silkworm addition)
+      kHold,
     };
 
     /// Validator of messages arriving from the wire that can ignore messages
@@ -599,6 +620,14 @@ namespace libp2p::protocol::gossip {
     /// or the message is known already (received, being validated, refused
     /// or published)
     virtual bool publish(TopicId topic, Bytes data) = 0;
+
+    /// Forwards a message its validator held (ValidationResult::kHold), which
+    /// the application validated since: to the topic's mesh as a valid
+    /// message received then, the peer that delivered it excepted, and cached
+    /// for IWANT (silkworm addition). \p data is the message's data as
+    /// delivered. False if no such message is held (never held, forwarded
+    /// already, or expired after Config::held_msec)
+    virtual bool forwardHeld(const TopicId &topic, const Bytes &data) = 0;
 
     /// Peers that currently have a live gossip stream (silkworm addition:
     /// lets the embedder protect gossip-active peers when pruning excess

@@ -70,6 +70,8 @@ namespace libp2p::protocol::gossip {
                            SubscriptionCallback callback) override;
     bool publish(TopicId topic, Bytes data) override;
 
+    bool forwardHeld(const TopicId &topic, const Bytes &data) override;
+
     std::vector<peer::PeerId> getConnectedPeers() const override;
     std::vector<peer::PeerId> getMeshPeers() const override;
     std::vector<peer::PeerId> getOutboundPeers() const override;
@@ -271,6 +273,21 @@ namespace libp2p::protocol::gossip {
     /// not requested with IWANT
     RecentIds ignored_;
     RecentIds rejected_;
+
+    /// Messages a validator held (ValidationResult::kHold), delivered but
+    /// not forwarded, with the peer that delivered them and when, until
+    /// forwardHeld() forwards them or they expire (Config::held_msec), at
+    /// most Config::max_held_messages, the oldest dropped first
+    struct HeldMessage {
+      MessageId id;
+      PeerContextPtr from;
+      TopicMessage::Ptr msg;
+      Time since;
+    };
+    std::deque<HeldMessage> held_;
+
+    /// Drops the held messages older than Config::held_msec
+    void expireHeld();
 
     /// Network part of gossip component
     std::shared_ptr<Connectivity> connectivity_;

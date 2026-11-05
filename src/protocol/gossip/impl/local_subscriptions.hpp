@@ -33,7 +33,8 @@ namespace libp2p::protocol::gossip {
 
     /// Forwards data to subscriptions
     void forwardMessage(const TopicMessage::Ptr &msg,
-                        const std::string &delivered_by);
+                        const std::string &delivered_by,
+                        bool held = false);
 
     /// Forwards EOS to all subscribers
     void forwardEndOfSubscription();

@@ -196,6 +196,7 @@ namespace libp2p::protocol::gossip {
     remote_subscriptions_.reset();
     connectivity_.reset();
     pending_validations_.clear();
+    held_.clear();
 
     local_subscriptions_->forwardEndOfSubscription();
   }
@@ -325,6 +326,40 @@ namespace libp2p::protocol::gossip {
     // the message goes out now, not with the next message or heartbeat
     connectivity_->flush();
     return true;
+  }
+
+  bool GossipCore::forwardHeld(const TopicId &topic, const Bytes &data) {
+    if (!started_) {
+      return false;
+    }
+    expireHeld();
+    const auto it = std::find_if(
+        held_.begin(), held_.end(), [&](const HeldMessage &held) {
+          return held.msg->topic == topic && held.msg->data == data;
+        });
+    if (it == held_.end()) {
+      return false;
+    }
+    auto held = std::move(*it);
+    held_.erase(it);
+    // we may have left the topic meanwhile
+    if (!isSubscribed(topic) || !remote_subscriptions_->hasTopic(topic)
+        || !msg_cache_.insert(held.msg, held.id)) {
+      return false;
+    }
+    ++counters_.held_forwarded;
+    // As a valid message received now from the peer that delivered it
+    remote_subscriptions_->onNewMessage(held.from, held.msg, held.id);
+    connectivity_->flush();
+    return true;
+  }
+
+  void GossipCore::expireHeld() {
+    const auto now = scheduler_->now();
+    while (!held_.empty() && now - held_.front().since >= config_.held_msec) {
+      held_.pop_front();
+      ++counters_.held_expired;
+    }
   }
 
   std::vector<peer::PeerId> GossipCore::getConnectedPeers() const {
@@ -1003,6 +1038,27 @@ namespace libp2p::protocol::gossip {
       log_.debug("message ignored by validation");
       return;
     }
+    if (validation == ValidationResult::kHold) {
+      // Ignored as far as the network goes: neither forwarded, cached for
+      // IWANT nor scored as a delivery. The application gets it, and
+      // forwards it with forwardHeld() once it validated it (silkworm #219)
+      peer_score2_->reject_message(from->peer_id,
+                                   msg_id_str,
+                                   msg->topic,
+                                   score::RejectReason::kValidationIgnored,
+                                   toScoreTime(scheduler_->now()));
+      ignored_.insert(msg_id);
+      expireHeld();
+      held_.push_back({msg_id, from, msg, scheduler_->now()});
+      if (held_.size() > config_.max_held_messages) {
+        held_.pop_front();
+        ++counters_.held_expired;
+      }
+      ++counters_.held;
+      log_.debug("message held by validation");
+      local_subscriptions_->forwardMessage(msg, from->str, /*held=*/true);
+      return;
+    }
     if (validation == ValidationResult::kReject) {
       // P4 (InvalidMessageDeliveries): verbatim rust-libp2p semantics — the
       // reject fans out to every peer that delivered this id and the record
@@ -1105,6 +1161,7 @@ namespace libp2p::protocol::gossip {
 
     // shift cache
     msg_cache_.shift();
+    expireHeld();
 
     // the per-peer diagnostics of the sessions that ended a while ago
     if (config_.peer_diagnostics

@@ -162,6 +162,9 @@ namespace libp2p::protocol::gossip {
           m.has_seqno() ? fromString(m.seqno()) : Bytes{},
           fromString(m.data()));
       message->topic = m.topic();
+      // Present, even empty: StrictNoSign rejects the message all the same
+      message->has_from = m.has_from();
+      message->has_seq_no = m.has_seqno();
       if (m.has_signature()) {
         message->signature = fromString(m.signature());
       }

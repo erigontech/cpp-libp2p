@@ -68,6 +68,18 @@ namespace libp2p::protocol::gossip {
     boost::optional<Bytes> signature;
     boost::optional<Bytes> key;
 
+    /// Received with a from or a seqno field, even an empty one: in proto2 a
+    /// field set empty is still present on the wire
+    bool has_from = false;
+    bool has_seq_no = false;
+
+    /// It carries an author field (from, seqno, signature or key), even an
+    /// empty one: the StrictNoSign receivers reject it
+    bool hasAuthorFields() const {
+      return has_from || has_seq_no || !from.empty() || !seq_no.empty()
+          || signature || key;
+    }
+
     /// Creates a new message from wire or storage
     TopicMessage(Bytes _from, Bytes _seq, Bytes _data);
 

@@ -161,10 +161,12 @@ namespace libp2p::protocol::gossip {
     /// key (the StrictNoSign signature policy, which eth2 requires). The
     /// StrictNoSign receivers reject a message carrying any of them, before
     /// they look whether they have it: go-libp2p-pubsub with
-    /// RejectUnexpectedAuthInfo, rust-libp2p in its Anonymous mode. Overrides
-    /// sign_messages. The message IDs must then come from the content
-    /// (setMessageIdFn): the default ID, of from and seqno, would be the same
-    /// for every message published
+    /// RejectUnexpectedAuthInfo, rust-libp2p in its Anonymous mode, and so do
+    /// we: an invalid message delivery (P4) for its sender, neither cached,
+    /// delivered, forwarded nor announced, and its ID not seen, so that a copy
+    /// without them is still taken. Overrides sign_messages. The message IDs
+    /// must then come from the content (setMessageIdFn): the default ID, of
+    /// from and seqno, would be the same for every message published
     bool strict_no_sign = false;
 
     /// Keep per-peer diagnostics (peerDiagnostics): counters of what we sent
@@ -511,6 +513,10 @@ namespace libp2p::protocol::gossip {
     /// the message cache and the lists of ignored and rejected IDs had
     /// dropped it (without the seen IDs: validated, forwarded and announced)
     uint64_t seen_duplicates = 0;
+    /// Messages received with an author field under strict_no_sign, rejected,
+    /// and by the client family of their sender (agentFamilyOf)
+    uint64_t author_fields_rejected = 0;
+    std::map<std::string, uint64_t> author_fields_rejected_agents;
   };
 
   /// Gossip protocol interface

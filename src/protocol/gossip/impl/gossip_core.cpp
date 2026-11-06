@@ -14,6 +14,7 @@
 #include <libp2p/crypto/key_marshaller.hpp>
 #include <libp2p/network/connection_manager.hpp>
 #include <libp2p/peer/identity_manager.hpp>
+#include <libp2p/protocol/identify/agent_versions.hpp>
 #include <qtils/hex.hpp>
 
 #include "connectivity.hpp"
@@ -930,6 +931,20 @@ namespace libp2p::protocol::gossip {
       return;
     }
     ensureTopicScoreParams(msg->topic);
+
+    // StrictNoSign: a message with an author field, even an empty one, is
+    // invalid, rejected before the duplicate check as go-libp2p-pubsub's
+    // checkSigningPolicy does (RejectUnexpectedAuthInfo). Its sender gets the
+    // P4 of a validator's REJECT; the message is neither cached, delivered,
+    // forwarded nor announced, and its ID is not seen: a copy without them
+    // from another peer is still taken (silkworm #223)
+    if (config_.strict_no_sign && msg->hasAuthorFields()) {
+      peer_score2_->reject_invalid_message(from->peer_id, msg->topic);
+      ++counters_.author_fields_rejected;
+      ++counters_.author_fields_rejected_agents[agentFamilyOf(from->peer_id)];
+      log_.debug("message with author fields from peer {} rejected", from->str);
+      return;
+    }
 
     MessageId msg_id = create_message_id_(msg->from, msg->seq_no, msg->data, msg->topic);
     const std::string msg_id_str(msg_id.begin(), msg_id.end());

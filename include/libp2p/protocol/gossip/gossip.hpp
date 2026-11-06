@@ -95,6 +95,13 @@ namespace libp2p::protocol::gossip {
     /// Topic's seen cache limit
     unsigned seen_cache_limit = 100;
 
+    /// gossipsub seen_ttl: a copy of a message seen in the last seen_ttl_msec
+    /// is a duplicate, neither validated, delivered, forwarded nor announced,
+    /// also once the message cache dropped the message. The IDs alone are
+    /// kept, at most seen_ids_limit of them (the oldest dropped first)
+    std::chrono::milliseconds seen_ttl_msec{message_cache_lifetime_msec};
+    size_t seen_ids_limit = size_t{1} << 18;
+
     /// Messages held at most while asynchronous validators decide on them:
     /// past that, a message for an asynchronous validator is dropped
     /// (ValidationResult::kDrop)
@@ -500,6 +507,10 @@ namespace libp2p::protocol::gossip {
     uint64_t held = 0;
     uint64_t held_forwarded = 0;
     uint64_t held_expired = 0;
+    /// Copies of a message seen within seen_ttl dropped as duplicates once
+    /// the message cache and the lists of ignored and rejected IDs had
+    /// dropped it (without the seen IDs: validated, forwarded and announced)
+    uint64_t seen_duplicates = 0;
   };
 
   /// Gossip protocol interface

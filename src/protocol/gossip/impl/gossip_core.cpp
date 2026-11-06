@@ -60,6 +60,7 @@ namespace libp2p::protocol::gossip {
             config_.message_cache_lifetime_msec,
             [sch = scheduler_] { return sch->now(); }
         ),
+        seen_ids_(config_.seen_ttl_msec, config_.seen_ids_limit),
         local_subscriptions_(std::make_shared<LocalSubscriptions>(
             [this](bool subscribe, const TopicId &topic) {
               onLocalSubscriptionChanged(subscribe, topic);
@@ -309,13 +310,15 @@ namespace libp2p::protocol::gossip {
     // alone (eth2), a node that rebuilds a message it also received would
     // forward it twice
     if (msg_cache_.contains(msg_id) || pending_validations_.contains(msg_id)
-        || ignored_.contains(msg_id) || rejected_.contains(msg_id)) {
+        || ignored_.contains(msg_id) || rejected_.contains(msg_id)
+        || seen_ids_.contains(msg_id)) {
       ++counters_.publish_known;
       return false;
     }
 
     [[maybe_unused]] bool inserted = msg_cache_.insert(msg, msg_id);
     assert(inserted);
+    seen_ids_.insert(msg_id, scheduler_->now());
 
     remote_subscriptions_->onNewMessage(boost::none, msg, msg_id);
 
@@ -352,6 +355,12 @@ namespace libp2p::protocol::gossip {
     remote_subscriptions_->onNewMessage(held.from, held.msg, held.id);
     connectivity_->flush();
     return true;
+  }
+
+  void GossipCore::expireCaches() {
+    msg_cache_.shift();
+    seen_ids_.expire(scheduler_->now());
+    expireHeld();
   }
 
   void GossipCore::expireHeld() {
@@ -683,7 +692,7 @@ namespace libp2p::protocol::gossip {
     if (isSubscribed(topic) && remote_subscriptions_->hasTopic(topic)
         && !msg_cache_.contains(msg_id)
         && !pending_validations_.contains(msg_id) && !ignored_.contains(msg_id)
-        && !rejected_.contains(msg_id)) {
+        && !rejected_.contains(msg_id) && !seen_ids_.contains(msg_id)) {
       log_.info("requesting IWANT msg_id={:x} from peer {}", msg_id, from->str);
 
       from->message_builder->addIWant(msg_id);
@@ -929,9 +938,16 @@ namespace libp2p::protocol::gossip {
     log_.debug("MESSAGE arrived from peer {}, topic={}, size={}, msg_id={:x}",
                from->str, msg->topic, msg->data.size(), msg_id);
 
-    if (msg_cache_.contains(msg_id) || ignored_.contains(msg_id)
-        || rejected_.contains(msg_id)
-        || pending_validations_.contains(msg_id)) {
+    bool duplicate = msg_cache_.contains(msg_id) || ignored_.contains(msg_id)
+                  || rejected_.contains(msg_id)
+                  || pending_validations_.contains(msg_id);
+    // Seen within seen_ttl, after the message cache dropped it: its ID is all
+    // that is left of it (silkworm #211)
+    if (!duplicate && seen_ids_.contains(msg_id)) {
+      ++counters_.seen_duplicates;
+      duplicate = true;
+    }
+    if (duplicate) {
       // duplicate delivery: measure this peer's lag vs the first copy
       if (isEnvelopeTopic(msg->topic)) {
         if (auto it = first_envelope_delivery_.find(msg_id);
@@ -1026,6 +1042,8 @@ namespace libp2p::protocol::gossip {
       log_.debug("message dropped without validation");
       return;
     }
+    // Judged: its copies are duplicates for seen_ttl, whatever the verdict
+    seen_ids_.insert(msg_id, scheduler_->now());
     const std::string msg_id_str(msg_id.begin(), msg_id.end());
     if (validation == ValidationResult::kIgnore) {
       // rust-libp2p MessageAcceptance::Ignore: neither forwarded nor penalized
@@ -1159,9 +1177,7 @@ namespace libp2p::protocol::gossip {
     }
     assert(started_);
 
-    // shift cache
-    msg_cache_.shift();
-    expireHeld();
+    expireCaches();
 
     // the per-peer diagnostics of the sessions that ended a while ago
     if (config_.peer_diagnostics

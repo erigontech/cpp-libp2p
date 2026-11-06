@@ -22,6 +22,7 @@
 #include "partial_messages.hpp"
 #include "peer_set.hpp"
 #include "score/peer_score2.hpp"
+#include "seen_ids.hpp"
 
 namespace libp2p::protocol::gossip {
 
@@ -178,6 +179,10 @@ namespace libp2p::protocol::gossip {
 
     /// Message cache w/expiration
     MessageCache msg_cache_;
+
+    /// IDs of the messages seen in the last Config::seen_ttl_msec, longer than
+    /// the message cache keeps them: copies of them are duplicates
+    SeenIds seen_ids_;
 
     /// Recently eager-IWANTed message ids (bounded FIFO): ensures only the
     /// FIRST IHAVE advertiser of a latency-critical message triggers an
@@ -345,6 +350,10 @@ namespace libp2p::protocol::gossip {
     /// Refreshes the direction and P6 IPs of every connected peer, as the
     /// heartbeat does every kConnectionInfoSweepHeartbeats (tests)
     void refreshConnectionInfos();
+
+    /// Drops the expired messages of the message cache, the expired seen IDs
+    /// and held messages, as every heartbeat does (tests)
+    void expireCaches();
 
     /// The context of a connected peer, nullptr if not connected (tests)
     PeerContextPtr connectedPeer(const peer::PeerId &peer) const;

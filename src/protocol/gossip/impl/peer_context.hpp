@@ -48,6 +48,9 @@ namespace libp2p::protocol::gossip {
       /// for every message to every peer
       std::array<uint8_t, PeerDiagnostics::kPushIdBytes> id{};
       uint8_t id_size = 0;
+      /// In non_column only, the data of a message of at most
+      /// PeerDiagnostics::kSentDataBytes
+      std::shared_ptr<const Bytes> data;
 
       Bytes messageId() const {
         return Bytes(id.begin(), id.begin() + id_size);
@@ -56,6 +59,10 @@ namespace libp2p::protocol::gossip {
     static constexpr size_t kPushes = 32;
     std::array<PushRecord, kPushes> pushes{};
     size_t pushes_next = 0;
+    /// The last full messages other than data column sidecars we sent the
+    /// peer (PeerDiagnostics::sent_non_column)
+    std::array<PushRecord, PeerDiagnostics::kSentNonColumn> non_column{};
+    size_t non_column_next = 0;
     /// The PRUNEs within kPruneBurst of the first make a burst, at
     /// prune_burst_at (zero: none yet)
     static constexpr Time kPruneBurst{1'000};
@@ -66,16 +73,17 @@ namespace libp2p::protocol::gossip {
     PeerDiagnostics::Topic &topic(const TopicId &id) {
       return view.topics[id];
     }
-    /// A full message of \p bytes, \p msg_id, we sent the peer on \p id at
-    /// \p now
-    void pushed(const TopicId &id,
+    /// The full message \p msg, \p msg_id, we sent the peer at \p now
+    void pushed(const TopicMessage::Ptr &msg,
                 PeerDiagnostics::PushKind kind,
-                size_t bytes,
                 const MessageId &msg_id,
                 Time now);
     /// The messages we sent it within PeerDiagnostics::kSentRecently before
     /// \p now, the latest first, without their data
     std::vector<PeerDiagnostics::Push> sentRecently(Time now) const;
+    /// The messages other than columns we sent it, the latest first, with the
+    /// data kept of the small ones
+    std::vector<PeerDiagnostics::Push> sentNonColumn(Time now) const;
     /// A PRUNE it sent us at \p now
     void pruneReceived(Time now);
   };
@@ -180,13 +188,12 @@ namespace libp2p::protocol::gossip {
 
   /// What we queue for a peer, counted in its session if it has one
   inline void diagnoseMessage(PeerContext &ctx,
-                              const TopicId &topic,
-                              size_t bytes,
+                              const TopicMessage::Ptr &msg,
                               const MessageId &msg_id,
                               PeerDiagnostics::PushKind kind,
                               Time now) {
     if (auto *diag = ctx.diag.get()) {
-      diag->pushed(topic, kind, bytes, msg_id, now);
+      diag->pushed(msg, kind, msg_id, now);
     }
   }
   inline void diagnoseIDontWant(PeerContext &ctx, const TopicId &topic) {

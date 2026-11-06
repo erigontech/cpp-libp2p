@@ -799,9 +799,8 @@ namespace libp2p::protocol::gossip {
       } else {
         ++view.iwant_served;
         view.iwant_served_bytes += msg_found.value()->data.size();
-        diag->pushed(msg_found.value()->topic,
+        diag->pushed(msg_found.value(),
                      PeerDiagnostics::PushKind::kIWant,
-                     msg_found.value()->data.size(),
                      msg_id,
                      scheduler_->now());
         if (from->outbound_stream) {
@@ -1337,12 +1336,20 @@ namespace libp2p::protocol::gossip {
       view.prune_burst_age = now - diag.prune_burst_at;
     }
     // the data of those still cached, for the caller to read them
-    view.sent_recently = diag.sentRecently(now);
-    for (auto &push : view.sent_recently) {
-      if (auto msg = msg_cache_.getMessage(push.id)) {
-        push.data = std::shared_ptr<const Bytes>(*msg, &(*msg)->data);
-      }
-    }
+    const auto with_cached_data =
+        [this](std::vector<PeerDiagnostics::Push> pushes) {
+          for (auto &push : pushes) {
+            if (push.data) {
+              continue;
+            }
+            if (auto msg = msg_cache_.getMessage(push.id)) {
+              push.data = std::shared_ptr<const Bytes>(*msg, &(*msg)->data);
+            }
+          }
+          return pushes;
+        };
+    view.sent_recently = with_cached_data(diag.sentRecently(now));
+    view.sent_non_column = with_cached_data(diag.sentNonColumn(now));
     return view;
   }
 

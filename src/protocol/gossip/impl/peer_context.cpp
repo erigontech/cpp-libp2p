@@ -33,6 +33,33 @@ namespace libp2p::protocol::gossip {
       }
       return prefix;
     }
+
+    bool isDataColumnTopic(const TopicId &topic) {
+      return topic.find("/data_column_sidecar_") != std::string::npos;
+    }
+
+    /// The records of \p ring, whose next one to write is \p next, the
+    /// latest first, back to \p max_age before \p now
+    template <size_t N>
+    std::vector<PeerDiagnostics::Push> latestPushes(
+        const std::array<PeerDiagnosticsState::PushRecord, N> &ring,
+        size_t next,
+        Time now,
+        Time max_age) {
+      std::vector<PeerDiagnostics::Push> found;
+      for (size_t back = 1; back <= N; ++back) {
+        const auto &record = ring[(next + N - back) % N];
+        if (record.topic == nullptr || now - record.at > max_age) {
+          break;
+        }
+        found.push_back({.topic = *record.topic,
+                         .kind = record.kind,
+                         .before = now - record.at,
+                         .id = record.messageId(),
+                         .data = record.data});
+      }
+      return found;
+    }
   }  // namespace
 
   void PeerDiagnosticsState::announce(const MessageId &msg_id, Time now) {
@@ -49,40 +76,44 @@ namespace libp2p::protocol::gossip {
     announced_next = (announced_next + 1) % kAnnounced;
   }
 
-  void PeerDiagnosticsState::pushed(const TopicId &id,
+  void PeerDiagnosticsState::pushed(const TopicMessage::Ptr &msg,
                                     PeerDiagnostics::PushKind kind,
-                                    size_t bytes,
                                     const MessageId &msg_id,
                                     Time now) {
-    const auto entry = view.topics.try_emplace(id).first;
+    const auto entry = view.topics.try_emplace(msg->topic).first;
     auto &counters = entry->second;
     ++counters.messages;
-    counters.message_bytes += bytes;
-    auto &record = pushes[pushes_next];
-    record.at = now;
-    record.topic = &entry->first;
-    record.kind = kind;
-    record.id_size = static_cast<uint8_t>(
-        std::min(msg_id.size(), PeerDiagnostics::kPushIdBytes));
-    std::copy_n(msg_id.begin(), record.id_size, record.id.begin());
+    counters.message_bytes += msg->data.size();
+    const auto fill = [&](PushRecord &record) {
+      record.at = now;
+      record.topic = &entry->first;
+      record.kind = kind;
+      record.id_size = static_cast<uint8_t>(
+          std::min(msg_id.size(), PeerDiagnostics::kPushIdBytes));
+      std::copy_n(msg_id.begin(), record.id_size, record.id.begin());
+    };
+    fill(pushes[pushes_next]);
     pushes_next = (pushes_next + 1) % kPushes;
+    // the columns are most of what we send: the others are kept apart
+    if (!isDataColumnTopic(msg->topic)) {
+      auto &other = non_column[non_column_next];
+      fill(other);
+      other.data = msg->data.size() <= PeerDiagnostics::kSentDataBytes
+                     ? std::shared_ptr<const Bytes>(msg, &msg->data)
+                     : nullptr;
+      non_column_next = (non_column_next + 1) % non_column.size();
+    }
   }
 
   std::vector<PeerDiagnostics::Push> PeerDiagnosticsState::sentRecently(
       Time now) const {
-    std::vector<PeerDiagnostics::Push> sent;
-    for (size_t back = 1; back <= kPushes; ++back) {
-      const auto &record = pushes[(pushes_next + kPushes - back) % kPushes];
-      if (record.topic == nullptr
-          || now - record.at > PeerDiagnostics::kSentRecently) {
-        break;
-      }
-      sent.push_back({.topic = *record.topic,
-                      .kind = record.kind,
-                      .before = now - record.at,
-                      .id = record.messageId()});
-    }
-    return sent;
+    return latestPushes(
+        pushes, pushes_next, now, PeerDiagnostics::kSentRecently);
+  }
+
+  std::vector<PeerDiagnostics::Push> PeerDiagnosticsState::sentNonColumn(
+      Time now) const {
+    return latestPushes(non_column, non_column_next, now, Time::max());
   }
 
   void PeerDiagnosticsState::pruneReceived(Time now) {
@@ -93,19 +124,8 @@ namespace libp2p::protocol::gossip {
     }
     prune_burst_at = now;
     view.prune_burst_topics = 1;
-    view.pushes_before_prune.clear();
-    // the latest first, back to kPushesBeforePrune before the PRUNE
-    for (size_t back = 1; back <= kPushes; ++back) {
-      const auto &record = pushes[(pushes_next + kPushes - back) % kPushes];
-      if (record.topic == nullptr
-          || now - record.at > PeerDiagnostics::kPushesBeforePrune) {
-        break;
-      }
-      view.pushes_before_prune.push_back({.topic = *record.topic,
-                                          .kind = record.kind,
-                                          .before = now - record.at,
-                                          .id = record.messageId()});
-    }
+    view.pushes_before_prune = latestPushes(
+        pushes, pushes_next, now, PeerDiagnostics::kPushesBeforePrune);
   }
 
   std::optional<Time> PeerDiagnosticsState::announcedAt(

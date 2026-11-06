@@ -310,9 +310,9 @@ namespace libp2p::protocol::gossip {
     /// answer to its IWANT
     enum class PushKind : uint8_t { kForward, kPublish, kIWant };
     /// A full message we sent it, \p before its last PRUNE burst (or before
-    /// the view was taken, in sent_recently). Its message ID, at most
-    /// kPushIdBytes of it, and in sent_recently its data while we still
-    /// cache the message (null after)
+    /// the view was taken, in sent_recently and sent_non_column). Its message
+    /// ID, at most kPushIdBytes of it, and in sent_recently and
+    /// sent_non_column its data while we still cache the message (null after)
     static constexpr size_t kPushIdBytes = 20;
     struct Push {
       TopicId topic;
@@ -324,9 +324,19 @@ namespace libp2p::protocol::gossip {
     /// The full messages we sent it within kSentRecently before the view was
     /// taken, the latest first, at most 32: what a peer that says Goodbye for
     /// its score of us could have rejected (P4), whether or not it pruned us
-    /// first (silkworm #167)
-    static constexpr std::chrono::milliseconds kSentRecently{120'000};
+    /// first (silkworm #167). Prysm's Goodbye can come 4 minutes after the
+    /// rejection: it copies the scores every minute, and checks them every
+    /// 16 slots
+    static constexpr std::chrono::milliseconds kSentRecently{300'000};
     std::vector<Push> sent_recently;
+    /// The last kSentNonColumn full messages other than data column sidecars
+    /// we sent it over the session, the latest first: the aggregates and
+    /// payload attestations sent minutes before its Goodbye, which the columns
+    /// push out of sent_recently (silkworm #167). The data of those of at most
+    /// kSentDataBytes is kept after the message cache dropped them
+    static constexpr size_t kSentNonColumn = 32;
+    static constexpr size_t kSentDataBytes = 2048;
+    std::vector<Push> sent_non_column;
     /// Its last PRUNE burst: the PRUNEs it sent us within a second of each
     /// other. A go or rust heartbeat prunes a peer whose score turned negative
     /// from all its meshes at once, which is how an invalid message (P4) we

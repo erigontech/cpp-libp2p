@@ -26,7 +26,12 @@
 //  - IP addresses are plain strings (C++ std has no IpAddr);
 //  - PeerScoreParams additionally carries an optional app-specific score
 //    hook (std::function). When unset, the per-peer value installed via
-//    set_application_score() is used, exactly like Rust.
+//    set_application_score() is used, exactly like Rust;
+//  - the delivery record of a message rejected as invalid is kept
+//    PeerScoreParams::invalid_record_ttl from its rejection, at most
+//    kMaxInvalidRecords of them, the others kTimeCacheDuration as in Rust;
+//  - reject_message and duplicated_message return the invalid message
+//    deliveries they counted for the copies, for the router's counters.
 
 #include <chrono>
 #include <cstdint>
@@ -55,6 +60,11 @@ namespace libp2p::protocol::gossip::score {
 
   /// The number of seconds delivery messages are stored in the cache.
   inline constexpr Duration kTimeCacheDuration = std::chrono::seconds{120};
+
+  /// The delivery records of invalid messages kept invalid_record_ttl
+  /// (PeerScoreParams) at most: past them, the oldest one is kept
+  /// kTimeCacheDuration from its insertion only.
+  inline constexpr size_t kMaxInvalidRecords = 4096;
 
   /// The default number of seconds for a decay interval.
   inline constexpr Duration kDefaultDecayInterval = std::chrono::seconds{1};
@@ -218,6 +228,16 @@ namespace libp2p::protocol::gossip::score {
     /// Time to remember counters for a disconnected peer.
     Duration retain_score = std::chrono::seconds{3600};
 
+    /// Time to keep the delivery record of a message rejected as invalid
+    /// (RejectReason::kValidationFailed), from its rejection: each later
+    /// copy of it is an invalid message delivery (P4) meanwhile. A router
+    /// that drops the copies as duplicates longer than kTimeCacheDuration
+    /// (its seen_ttl) sets it to that time; a shorter one changes nothing.
+    /// The other records are kept kTimeCacheDuration, as Rust keeps them
+    /// all (go-libp2p-pubsub keeps them all PeerScoreParams.SeenMsgTTL,
+    /// kTimeCacheDuration by default).
+    Duration invalid_record_ttl = kTimeCacheDuration;
+
     /// Slow peer penalty conditions,
     /// by default slow_peer_weight is 50 times lower than
     /// behaviour_penalty_weight i.e. 50 slow peer penalties match 1
@@ -244,7 +264,7 @@ namespace libp2p::protocol::gossip::score {
     kBlackListedSource,
     /// The validation was ignored.
     kValidationIgnored,
-    /// The validation failed.
+    /// The validation failed (a validator's REJECT).
     kValidationFailed,
   };
 
@@ -318,15 +338,18 @@ namespace libp2p::protocol::gossip::score {
     void useful_partial_message(const PeerId &from, const TopicId &topic);
 
     /// A message failed validation (or was ignored): penalizes / clears
-    /// according to reason and the delivery-status state machine.
-    void reject_message(const PeerId &from,
-                        const MessageId &msg_id,
-                        const TopicId &topic,
-                        RejectReason reason,
-                        TimePoint now);
+    /// according to reason and the delivery-status state machine. Returns
+    /// the invalid message deliveries counted for the peers that delivered
+    /// it while it was validated.
+    size_t reject_message(const PeerId &from,
+                          const MessageId &msg_id,
+                          const TopicId &topic,
+                          RejectReason reason,
+                          TimePoint now);
 
-    /// A duplicate of a known message arrived from a peer.
-    void duplicated_message(const PeerId &from,
+    /// A duplicate of a known message arrived from a peer. Returns whether
+    /// it counted as an invalid message delivery.
+    bool duplicated_message(const PeerId &from,
                             const MessageId &msg_id,
                             const TopicId &topic,
                             TimePoint now);
@@ -428,7 +451,9 @@ namespace libp2p::protocol::gossip::score {
 
     /// Port of Rust gossipsub's TimeCache<MessageId, DeliveryRecord>:
     /// entries expire ttl after first insertion (re-lookups do not extend
-    /// the TTL); expired entries are purged lazily on each access.
+    /// the TTL); expired entries are purged lazily on each access. Those
+    /// keep_invalid() keeps expire invalid_ttl after it instead, at most
+    /// kMaxInvalidRecords of them.
     struct DeliveryRecords {
       struct Element {
         DeliveryRecord record;
@@ -438,12 +463,21 @@ namespace libp2p::protocol::gossip::score {
       /// Find-or-insert with default record; purges expired entries first.
       DeliveryRecord &entry(const MessageId &msg_id, TimePoint now);
 
+      /// Keeps the record of msg_id, rejected as invalid at now, until
+      /// invalid_ttl after now if that is later than its expiry. Past
+      /// kMaxInvalidRecords kept so, the oldest expires ttl after its
+      /// insertion again.
+      void keep_invalid(const MessageId &msg_id, TimePoint now);
+
       void remove_expired(TimePoint now);
 
       std::unordered_map<MessageId, Element> map;
       /// Keys ordered by expiry time (append-only ⇒ sorted).
       std::deque<std::pair<TimePoint, MessageId>> expirations;
+      /// The same for the records keep_invalid() keeps.
+      std::deque<std::pair<TimePoint, MessageId>> invalid_expirations;
       Duration ttl = kTimeCacheDuration;
+      Duration invalid_ttl = kTimeCacheDuration;
     };
 
     /// Returns a pointer to topic stats if they exist, otherwise if the
@@ -458,7 +492,8 @@ namespace libp2p::protocol::gossip::score {
         const PeerId &peer_id);
 
     /// Increments the "invalid message deliveries" counter for the topic.
-    void mark_invalid_message_delivery(const PeerId &peer_id,
+    /// Returns false when the peer is unknown or the topic not scored.
+    bool mark_invalid_message_delivery(const PeerId &peer_id,
                                        const TopicId &topic);
 
     /// Increments the "first message deliveries" counter, as well as the

@@ -79,6 +79,9 @@ namespace libp2p::protocol::gossip {
     params.ip_colocation_factor_whitelist.insert(
         config_.ip_colocation_whitelist.begin(),
         config_.ip_colocation_whitelist.end());
+    // The copies of a message a validator rejected are duplicates for
+    // seen_ttl, each an invalid message delivery meanwhile (silkworm #225)
+    params.invalid_record_ttl = config_.seen_ttl_msec;
     score_thresholds2_ = score::lighthouse_thresholds();
     peer_score2_ = std::make_shared<score::PeerScore>(std::move(params),
                                                      score_thresholds2_);
@@ -933,10 +936,12 @@ namespace libp2p::protocol::gossip {
 
     // StrictNoSign: a message with an author field, even an empty one, is
     // invalid, rejected before the duplicate check as go-libp2p-pubsub's
-    // checkSigningPolicy does (RejectUnexpectedAuthInfo). Its sender gets the
-    // P4 of a validator's REJECT; the message is neither cached, delivered,
-    // forwarded nor announced, and its ID is not seen: a copy without them
-    // from another peer is still taken (silkworm #223)
+    // checkSigningPolicy does (RejectUnexpectedAuthInfo). Its sender alone
+    // gets an invalid message delivery (P4), untracked as go's: no delivery
+    // record turns invalid, which would penalize the copies of a clean one.
+    // The message is neither cached, delivered, forwarded nor announced, and
+    // its ID is not seen: a copy without them from another peer is still
+    // taken (silkworm #223)
     if (config_.strict_no_sign && msg->hasAuthorFields()) {
       peer_score2_->reject_invalid_message(from->peer_id, msg->topic);
       ++counters_.author_fields_rejected;
@@ -980,8 +985,15 @@ namespace libp2p::protocol::gossip {
               : 0.8 * from->delivery_lag_ewma_ms + 0.2 * lag;
         }
       }
-      peer_score2_->duplicated_message(from->peer_id, msg_id_str, msg->topic,
-                                       toScoreTime(scheduler_->now()));
+      // A copy of a message a validator rejected within seen_ttl is an
+      // invalid message delivery; one that came while it was validated is
+      // one once it is rejected (silkworm #225)
+      if (peer_score2_->duplicated_message(from->peer_id,
+                                           msg_id_str,
+                                           msg->topic,
+                                           toScoreTime(scheduler_->now()))) {
+        ++counters_.invalid_duplicates_penalized;
+      }
       log_.debug("ignoring message, already in cache");
       return;
     }
@@ -1092,12 +1104,18 @@ namespace libp2p::protocol::gossip {
       return;
     }
     if (validation == ValidationResult::kReject) {
-      // P4 (InvalidMessageDeliveries): verbatim rust-libp2p semantics — the
-      // reject fans out to every peer that delivered this id and the record
-      // marks later copies invalid on arrival.
-      peer_score2_->reject_message(from->peer_id, msg_id_str, msg->topic,
-                                   score::RejectReason::kValidationError,
-                                   toScoreTime(scheduler_->now()));
+      // P4 (InvalidMessageDeliveries) as go-libp2p-pubsub's
+      // RejectValidationFailed and rust-libp2p's ValidationFailed: for its
+      // sender and the peers whose copies came while it was validated, and
+      // its delivery record turns invalid, so that each later copy is one
+      // too (silkworm #225). kValidationError, for a message that failed
+      // decoding, would penalize its sender alone
+      counters_.invalid_duplicates_penalized +=
+          peer_score2_->reject_message(from->peer_id,
+                                       msg_id_str,
+                                       msg->topic,
+                                       score::RejectReason::kValidationFailed,
+                                       toScoreTime(scheduler_->now()));
       rejected_.insert(msg_id);
       log_.debug("message validation failed (P4 penalty applied to {})",
                  from->str);

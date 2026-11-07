@@ -183,17 +183,39 @@ namespace libp2p::protocol::gossip::score {
   // -- DeliveryRecords (TimeCache) ------------------------------------------
 
   void PeerScore::DeliveryRecords::remove_expired(TimePoint now) {
-    while (!expirations.empty()) {
-      auto &[expires, msg_id] = expirations.front();
-      if (expires > now) {
-        break;
+    // a record keep_invalid() kept outlives its entry in expirations
+    for (auto *queue : {&expirations, &invalid_expirations}) {
+      while (!queue->empty() && queue->front().first <= now) {
+        if (auto it = map.find(queue->front().second);
+            it != map.end() && it->second.expires <= now) {
+          map.erase(it);
+        }
+        queue->pop_front();
       }
-      if (auto it = map.find(msg_id);
-          it != map.end() && it->second.expires <= now) {
-        map.erase(it);
-      }
-      expirations.pop_front();
     }
+  }
+
+  void PeerScore::DeliveryRecords::keep_invalid(const MessageId &msg_id,
+                                                TimePoint now) {
+    auto it = map.find(msg_id);
+    if (it == map.end() || now + invalid_ttl <= it->second.expires) {
+      return;
+    }
+    it->second.expires = now + invalid_ttl;
+    invalid_expirations.emplace_back(it->second.expires, msg_id);
+    if (invalid_expirations.size() <= kMaxInvalidRecords) {
+      return;
+    }
+    // The oldest expires ttl after its insertion again: at once if that has
+    // passed, as its entry in expirations is gone then
+    if (auto oldest = map.find(invalid_expirations.front().second);
+        oldest != map.end()) {
+      oldest->second.expires = oldest->second.record.first_seen + ttl;
+      if (oldest->second.expires <= now) {
+        map.erase(oldest);
+      }
+    }
+    invalid_expirations.pop_front();
   }
 
   PeerScore::DeliveryRecord &PeerScore::DeliveryRecords::entry(
@@ -211,7 +233,9 @@ namespace libp2p::protocol::gossip::score {
   // -- PeerScore ------------------------------------------------------------
 
   PeerScore::PeerScore(PeerScoreParams params, PeerScoreThresholds thresholds)
-      : params_{std::move(params)}, thresholds_{thresholds} {}
+      : params_{std::move(params)}, thresholds_{thresholds} {
+    deliveries_.invalid_ttl = params_.invalid_record_ttl;
+  }
 
   double PeerScore::score(const PeerId &peer_id) const {
     auto stats_it = peer_stats_.find(peer_id);
@@ -572,22 +596,22 @@ namespace libp2p::protocol::gossip::score {
     mark_invalid_message_delivery(from, topic);
   }
 
-  void PeerScore::reject_message(const PeerId &from,
-                                 const MessageId &msg_id,
-                                 const TopicId &topic,
-                                 RejectReason reason,
-                                 TimePoint now) {
+  size_t PeerScore::reject_message(const PeerId &from,
+                                   const MessageId &msg_id,
+                                   const TopicId &topic,
+                                   RejectReason reason,
+                                   TimePoint now) {
     switch (reason) {
       // these messages are not tracked, but the peer is penalized as they
       // are invalid
       case RejectReason::kValidationError:
       case RejectReason::kSelfOrigin:
         reject_invalid_message(from, topic);
-        return;
+        return 0;
       // we ignore those messages, so do nothing.
       case RejectReason::kBlackListedPeer:
       case RejectReason::kBlackListedSource:
-        return;
+        return 0;
       default:
         // the rest are handled after record creation
         break;
@@ -601,7 +625,7 @@ namespace libp2p::protocol::gossip::score {
       // peers send us the message. If we have already updated the status,
       // return.
       if (record.status != DeliveryStatus::kUnknown) {
-        return;
+        return 0;
       }
 
       if (reason == RejectReason::kValidationIgnored) {
@@ -609,7 +633,7 @@ namespace libp2p::protocol::gossip::score {
         // message but not penalize the peer
         record.status = DeliveryStatus::kIgnored;
         record.peers.clear();
-        return;
+        return 0;
       }
 
       // mark the message as invalid and penalize peers that have already
@@ -619,14 +643,19 @@ namespace libp2p::protocol::gossip::score {
       peers.assign(record.peers.begin(), record.peers.end());
       record.peers.clear();
     }
+    deliveries_.keep_invalid(msg_id, now);
 
     mark_invalid_message_delivery(from, topic);
+    size_t counted = 0;
     for (auto &peer_id : peers) {
-      mark_invalid_message_delivery(peer_id, topic);
+      if (mark_invalid_message_delivery(peer_id, topic)) {
+        ++counted;
+      }
     }
+    return counted;
   }
 
-  void PeerScore::duplicated_message(const PeerId &from,
+  bool PeerScore::duplicated_message(const PeerId &from,
                                      const MessageId &msg_id,
                                      const TopicId &topic,
                                      TimePoint now) {
@@ -634,7 +663,7 @@ namespace libp2p::protocol::gossip::score {
 
     if (record.peers.contains(from)) {
       // we have already seen this duplicate!
-      return;
+      return false;
     }
 
     switch (record.status) {
@@ -651,13 +680,13 @@ namespace libp2p::protocol::gossip::score {
         break;
       case DeliveryStatus::kInvalid:
         // we no longer track delivery time
-        mark_invalid_message_delivery(from, topic);
-        break;
+        return mark_invalid_message_delivery(from, topic);
       case DeliveryStatus::kIgnored:
         // the message was ignored; do nothing (we don't know if it was
         // valid)
         break;
     }
+    return false;
   }
 
   void PeerScore::failed_message_slow_peer(const PeerId &peer_id) {
@@ -737,13 +766,15 @@ namespace libp2p::protocol::gossip::score {
     return it != peer_stats.topics.end() ? &it->second : nullptr;
   }
 
-  void PeerScore::mark_invalid_message_delivery(const PeerId &peer_id,
+  bool PeerScore::mark_invalid_message_delivery(const PeerId &peer_id,
                                                 const TopicId &topic) {
     if (auto it = peer_stats_.find(peer_id); it != peer_stats_.end()) {
       if (auto *topic_stats = stats_or_default(it->second, topic)) {
         topic_stats->invalid_message_deliveries += 1.0;
+        return true;
       }
     }
+    return false;
   }
 
   void PeerScore::mark_first_message_delivery(const PeerId &peer_id,

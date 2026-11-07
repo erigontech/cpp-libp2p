@@ -98,7 +98,10 @@ namespace libp2p::protocol::gossip {
     /// gossipsub seen_ttl: a copy of a message seen in the last seen_ttl_msec
     /// is a duplicate, neither validated, delivered, forwarded nor announced,
     /// also once the message cache dropped the message. The IDs alone are
-    /// kept, at most seen_ids_limit of them (the oldest dropped first)
+    /// kept, at most seen_ids_limit of them (the oldest dropped first). A
+    /// copy of a message a validator rejected is an invalid message delivery
+    /// (P4) meanwhile: for the last 4096 rejected, the earlier ones for 2
+    /// minutes from their first copy
     std::chrono::milliseconds seen_ttl_msec{message_cache_lifetime_msec};
     size_t seen_ids_limit = size_t{1} << 18;
 
@@ -527,6 +530,11 @@ namespace libp2p::protocol::gossip {
     /// and by the client family of their sender (agentFamilyOf)
     uint64_t author_fields_rejected = 0;
     std::map<std::string, uint64_t> author_fields_rejected_agents;
+    /// Copies of a message a validator rejected, other than the one it
+    /// validated, that were invalid message deliveries (P4) for their
+    /// senders: those received while it was validated, and the later ones
+    /// within seen_ttl. On the scored topics only
+    uint64_t invalid_duplicates_penalized = 0;
   };
 
   /// Gossip protocol interface
@@ -572,7 +580,9 @@ namespace libp2p::protocol::gossip {
     enum class ValidationResult {
       /// valid: deliver and forward
       kAccept,
-      /// invalid: drop and penalize the sender (P4)
+      /// invalid: drop it, an invalid message delivery (P4) for its sender,
+      /// for the peers whose copies came while it was validated and for
+      /// those of the later copies, duplicates within seen_ttl
       kReject,
       /// drop without penalizing the sender: neither delivered, forwarded nor
       /// cached for IWANT, and later copies are dropped as duplicates (e.g. an

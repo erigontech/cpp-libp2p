@@ -267,6 +267,12 @@ namespace libp2p::protocol::gossip {
       counters_.envelope_mesh_silent_mute = envelope_silence.mute;
       counters_.envelope_silent = envelope_silence.members;
     }
+    if (connectivity_) {
+      const auto answers = connectivity_->takeAnswerStats();
+      counters_.iwant_answers = answers.written;
+      counters_.iwant_answers_late = answers.late;
+      counters_.iwant_answer_max_ms = answers.max_ms;
+    }
     return std::exchange(counters_, RouterCounters{});
   }
 
@@ -788,9 +794,10 @@ namespace libp2p::protocol::gossip {
     auto msg_found = msg_cache_.getMessage(msg_id);
     if (auto *diag = from->diag.get()) {
       // a message we no longer have is a broken promise (P7) there, as is an
-      // answer that reaches it past its IWANT followup time: the answer
-      // queues behind the bytes still to be written to it. The age of the
-      // ID since our first IHAVE of it is not the answer's delay
+      // answer that reaches it past its IWANT followup time: the answer goes
+      // ahead of the bytes still to be written to it, but the write in
+      // progress (Stream::writeAnswers). The age of the ID since our first
+      // IHAVE of it is not the answer's delay
       auto &view = diag->view;
       ++view.iwant_ids_rx;
       const auto announced = diag->announcedAt(msg_id);
@@ -827,7 +834,10 @@ namespace libp2p::protocol::gossip {
       }
     }
     if (msg_found) {
-      from->message_builder->addMessage(*msg_found.value(), msg_id);
+      if (from->iwant_answers->empty()) {
+        from->iwant_answers_requested = scheduler_->now();
+      }
+      from->iwant_answers->addMessage(*msg_found.value(), msg_id);
       connectivity_->peerIsWritable(from, true);
     } else {
       log_.info("IWANT: message not in cache");

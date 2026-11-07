@@ -6,6 +6,7 @@
 
 #include "stream.hpp"
 
+#include <algorithm>
 #include <cassert>
 
 #include <libp2p/basic/read.hpp>
@@ -26,15 +27,18 @@ namespace libp2p::protocol::gossip {
                  const Feedback &feedback,
                  MessageReceiver &msg_receiver,
                  std::shared_ptr<connection::Stream> stream,
-                 PeerContextPtr peer)
+                 PeerContextPtr peer,
+                 AnswerStats *answers)
       : stream_id_(stream_id),
         timeout_(config.rw_timeout_msec),
+        iwant_followup_(config.iwant_followup_msec),
         scheduler_(scheduler),
         max_message_size_(config.max_message_size),
         feedback_(feedback),
         msg_receiver_(msg_receiver),
         stream_(std::move(stream)),
         peer_(std::move(peer)),
+        answers_(answers),
         read_buffer_(std::make_shared<std::vector<uint8_t>>()) {
     assert(feedback_);
     assert(stream_);
@@ -125,6 +129,16 @@ namespace libp2p::protocol::gossip {
   }
 
   void Stream::write(outcome::result<SharedBuffer> serialization_res) {
+    enqueue(std::move(serialization_res), std::nullopt);
+  }
+
+  void Stream::writeAnswers(outcome::result<SharedBuffer> serialization_res,
+                            Time requested) {
+    enqueue(std::move(serialization_res), requested);
+  }
+
+  void Stream::enqueue(outcome::result<SharedBuffer> serialization_res,
+                       std::optional<Time> requested) {
     if (closed_) {
       return;
     }
@@ -144,16 +158,25 @@ namespace libp2p::protocol::gossip {
       return;
     }
 
-    if (writing_bytes_ > 0) {
-      pending_bytes_ += buffer->size();
-      pending_buffers_.emplace_back(std::move(buffer));
+    if (writing_bytes_ == 0) {
+      beginWrite({std::move(buffer), requested});
+      return;
+    }
+    pending_bytes_ += buffer->size();
+    if (requested) {
+      // after the answers already waiting, ahead of the other messages
+      pending_buffers_.insert(
+          pending_buffers_.begin()
+              + static_cast<std::ptrdiff_t>(answers_waiting_),
+          Pending{std::move(buffer), requested});
+      ++answers_waiting_;
     } else {
-      beginWrite(std::move(buffer));
+      pending_buffers_.push_back({std::move(buffer), std::nullopt});
     }
   }
 
-  void Stream::beginWrite(SharedBuffer buffer) {
-    assert(buffer);
+  void Stream::beginWrite(Pending pending) {
+    assert(pending.buffer);
 
     // Survive synchronous completion. ASan 2026-09-11 (asan-report.583919):
     // libp2p::write on an already-closed QUIC stream invokes the completion
@@ -165,20 +188,23 @@ namespace libp2p::protocol::gossip {
     // (malloc abort in gossip heartbeat, dangling DialerImpl hashtable node).
     auto self = shared_from_this();
 
-    writing_bytes_ = buffer->size();
+    writing_bytes_ = pending.buffer->size();
+    writing_requested_ = pending.requested;
+    write_began_ = scheduler_.now();
+    begun_ = true;
 
     TRACE("writing {} bytes to {}:{}", writing_bytes_, peer_->str, stream_id_);
 
-    libp2p::write(
-        stream_,
-        *buffer,
-        [weak_self{weak_from_this()}, buffer](outcome::result<void> result) {
-          auto self = weak_self.lock();
-          if (not self) {
-            return;
-          }
-          self->onMessageWritten(result);
-        });
+    libp2p::write(stream_,
+                  *pending.buffer,
+                  [weak_self{weak_from_this()},
+                   buffer = pending.buffer](outcome::result<void> result) {
+                    auto self = weak_self.lock();
+                    if (not self) {
+                      return;
+                    }
+                    self->onMessageWritten(result);
+                  });
 
     if (closed_) {
       // the synchronous-error path above already tore this stream down
@@ -212,14 +238,60 @@ namespace libp2p::protocol::gossip {
 
     TRACE("written {} bytes to {}:{}", writing_bytes_, peer_->str, stream_id_);
 
+    countWrite(scheduler_.now());
     endWrite();
 
     if (!pending_buffers_.empty()) {
-      SharedBuffer &buffer = pending_buffers_.front();
-      pending_bytes_ -= buffer->size();
-      beginWrite(std::move(buffer));
+      // taken off the queue before the write, which may complete inline
+      auto next = std::move(pending_buffers_.front());
       pending_buffers_.pop_front();
+      if (answers_waiting_ > 0) {
+        --answers_waiting_;
+      }
+      pending_bytes_ -= next.buffer->size();
+      beginWrite(std::move(next));
     }
+  }
+
+  void Stream::countWrite(Time now) {
+    const auto took = std::max(now - write_began_, Time{1});
+    rate_bytes_ =
+        rate_bytes_ * kRateDecay + static_cast<double>(writing_bytes_);
+    rate_ms_ = rate_ms_ * kRateDecay + static_cast<double>(took.count());
+    if (!writing_requested_) {
+      return;
+    }
+    const auto delay = static_cast<uint64_t>(
+        std::max(now - *writing_requested_, Time{0}).count());
+    const bool late = now - *writing_requested_ > iwant_followup_;
+    if (answers_ != nullptr) {
+      ++answers_->written;
+      if (late) {
+        ++answers_->late;
+      }
+      answers_->max_ms = std::max(answers_->max_ms, delay);
+    }
+    if (auto *diag = peer_->diag.get()) {
+      auto &view = diag->view;
+      ++view.iwant_answers_written;
+      if (late) {
+        ++view.iwant_answers_late;
+      }
+      view.iwant_answer_max_ms = std::max(view.iwant_answer_max_ms, delay);
+    }
+  }
+
+  Time Stream::drainTime(Time now) const {
+    const size_t backlog = backlogBytes();
+    if (backlog == 0) {
+      return Time{0};
+    }
+    const double bytes_per_ms =
+        rate_ms_ > 0 ? rate_bytes_ / rate_ms_ : kDefaultBytesPerMs;
+    const Time estimate{
+        static_cast<Time::rep>(static_cast<double>(backlog) / bytes_per_ms)};
+    const Time waited = writing_bytes_ > 0 ? now - write_began_ : Time{0};
+    return std::max(estimate, waited);
   }
 
   void Stream::asyncPostError(Error error) {
@@ -234,6 +306,7 @@ namespace libp2p::protocol::gossip {
 
   void Stream::endWrite() {
     writing_bytes_ = 0;
+    writing_requested_.reset();
     timeout_handle_.reset();
   }
 

@@ -84,6 +84,18 @@ namespace libp2p::protocol::gossip {
     /// Read or write timeout per whole network operation
     std::chrono::milliseconds rw_timeout_msec{std::chrono::seconds(10)};
 
+    /// The time a peer waits for the answer to its IWANT before it counts a
+    /// broken promise (P7): the iwant_followup_time of go-libp2p-pubsub and
+    /// rust-libp2p. The answers written later are counted late (silkworm
+    /// #227)
+    std::chrono::milliseconds iwant_followup_msec{std::chrono::seconds(3)};
+
+    /// No IHAVE to a peer whose bytes queued take longer than this to drain,
+    /// at the rate its writes completed: the answers to the IWANTs it would
+    /// bring could come past its followup time (silkworm #227). Zero sends
+    /// them all
+    std::chrono::milliseconds ihave_max_drain_msec{std::chrono::seconds(2)};
+
     /// Lifetime of a message in message cache
     std::chrono::milliseconds message_cache_lifetime_msec{
         std::chrono::minutes(2)};
@@ -295,8 +307,9 @@ namespace libp2p::protocol::gossip {
     /// our IHAVE on record (unknown age), and those we no longer had (of them
     /// how many we had announced to it). Those ages are not how long the
     /// answers took: an IWANT promise runs from the IWANT (3 s in go and
-    /// rust), and the answers queue at once behind the bytes still to be
-    /// written to the peer, the most of which is iwant_backlog_max_bytes
+    /// rust), and the bytes still to be written to the peer when one came were
+    /// at most iwant_backlog_max_bytes; the answers go ahead of them but the
+    /// write in progress
     uint64_t ihave_ids_tx = 0;
     uint64_t iwant_ids_rx = 0;
     uint64_t iwant_served = 0;
@@ -308,6 +321,14 @@ namespace libp2p::protocol::gossip {
     uint64_t iwant_missed = 0;
     uint64_t iwant_missed_announced = 0;
     uint64_t iwant_backlog_max_bytes = 0;
+    /// The writes of answers to its IWANTs: all, those that ended past
+    /// Config::iwant_followup_msec from the IWANT (its broken promises, P7),
+    /// and the latest, in ms; the IHAVEs it did not get, its backlog taking
+    /// longer than Config::ihave_max_drain_msec to drain (silkworm #227)
+    uint64_t iwant_answers_written = 0;
+    uint64_t iwant_answers_late = 0;
+    uint64_t iwant_answer_max_ms = 0;
+    uint64_t ihaves_skipped_backlog = 0;
 
     /// How we sent it a full message: forwarded, published by us, or as the
     /// answer to its IWANT
@@ -535,6 +556,15 @@ namespace libp2p::protocol::gossip {
     /// senders: those received while it was validated, and the later ones
     /// within seen_ttl. On the scored topics only
     uint64_t invalid_duplicates_penalized = 0;
+    /// The writes of answers to IWANTs: all, those that ended past
+    /// Config::iwant_followup_msec from the IWANT, when the peer counts a
+    /// broken promise (P7), and the latest, in ms; the IHAVEs not sent, the
+    /// peer's backlog taking longer than Config::ihave_max_drain_msec to drain
+    /// (silkworm #227)
+    uint64_t iwant_answers = 0;
+    uint64_t iwant_answers_late = 0;
+    uint64_t iwant_answer_max_ms = 0;
+    uint64_t ihaves_skipped_backlog = 0;
   };
 
   /// Gossip protocol interface

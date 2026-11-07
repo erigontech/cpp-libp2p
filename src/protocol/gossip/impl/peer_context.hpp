@@ -99,6 +99,12 @@ namespace libp2p::protocol::gossip {
     /// Builds message to be sent to this peer
     std::shared_ptr<MessageBuilder> message_builder;
 
+    /// Builds the answers to its IWANTs, written ahead of the other messages
+    /// (Stream::writeAnswers), and when the first of them was asked for
+    /// (silkworm #227)
+    std::shared_ptr<MessageBuilder> iwant_answers;
+    Time iwant_answers_requested{0};
+
     /// Set of topics this peer is subscribed to
     std::set<TopicId> subscribed_to;
 

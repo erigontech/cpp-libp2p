@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <cstdlib>
+#include <optional>
 #include <string_view>
 #include <vector>
 
@@ -354,7 +355,7 @@ namespace libp2p::protocol::gossip {
           ++counters_.partial_ihaves_skipped;
           continue;
         }
-        if (needToForward(ctx, from, origin)) {
+        if (needToForward(ctx, from, origin) && !withholdIHave(*ctx, now)) {
           ctx->message_builder->addIHave(topic_, msg_id);
           diagnoseIHave(*ctx, topic_, msg_id, now);
           connectivity_.peerIsWritable(ctx, true);
@@ -769,7 +770,7 @@ namespace libp2p::protocol::gossip {
             }
             continue;
           }
-          if (recent.empty()) {
+          if (recent.empty() || withholdIHave(*ctx, now)) {
             continue;
           }
           for (const auto &mid : recent) {
@@ -959,9 +960,17 @@ namespace libp2p::protocol::gossip {
       const auto now = scheduler_.now();
       const Time min_expiry = now + config_.seen_cache_lifetime_msec
           - Time{kGossipWindows * config_.heartbeat_interval_msec};
+      // asked once there is an ID to announce
+      std::optional<bool> withheld;
       for (const auto &[expiry, msg_id] : seen_cache_) {
         if (expiry < min_expiry) {
           continue;
+        }
+        if (!withheld) {
+          withheld = withholdIHave(*p, now);
+        }
+        if (*withheld) {
+          break;
         }
         p->message_builder->addIHave(topic_, msg_id);
         diagnoseIHave(*p, topic_, msg_id, now, /*on_subscribe=*/true);
@@ -1289,6 +1298,21 @@ namespace libp2p::protocol::gossip {
     if (!inserted && it->second < until) {
       it->second = until;
     }
+  }
+
+  bool TopicSubscriptions::withholdIHave(PeerContext &p, Time now) {
+    // An IHAVE that is never asked for costs nothing; an answer that comes
+    // past the peer's followup time is a broken promise (P7), and Lighthouse
+    // keeps the score of a peer gone 10 h 40 min (silkworm #227)
+    if (config_.ihave_max_drain_msec <= Time{0} || !p.outbound_stream
+        || p.outbound_stream->drainTime(now) <= config_.ihave_max_drain_msec) {
+      return false;
+    }
+    ++counters_.ihaves_skipped_backlog;
+    if (p.diag) {
+      ++p.diag->view.ihaves_skipped_backlog;
+    }
+    return true;
   }
 
   bool TopicSubscriptions::skipSilenced(const PeerContextPtr &p) {

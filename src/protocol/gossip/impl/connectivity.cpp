@@ -8,6 +8,7 @@
 
 #include <algorithm>
 #include <cassert>
+#include <utility>
 
 #include <boost/range/algorithm/for_each.hpp>
 
@@ -169,23 +170,50 @@ namespace libp2p::protocol::gossip {
       return;
     }
 
-    if (ctx->message_builder->empty()) {
-      // nothing to flush, it's ok
-      return;
-    }
-
     if (!ctx->outbound_stream) {
       // will be flushed after connecting
       return;
     }
 
-    // N.B. errors, if any, will be passed later in async manner
-    auto serialized = ctx->message_builder->serialize();
-    if (ctx->diag && serialized) {
-      ++ctx->diag->view.writes_tx;
-      ctx->diag->view.bytes_tx += serialized.value()->size();
+    // The answers to its IWANTs go ahead of the messages waiting for it: it
+    // counts a broken promise (P7) for one that comes past its followup time
+    // (silkworm #227). Not ahead of the first message of the stream, which
+    // opens it with our Extensions control message
+    const bool answers_first = ctx->outbound_stream->begun();
+    if (answers_first) {
+      flushAnswers(*ctx);
     }
-    ctx->outbound_stream->write(std::move(serialized));
+    if (!ctx->message_builder->empty()) {
+      // N.B. errors, if any, will be passed later in async manner
+      auto serialized = ctx->message_builder->serialize();
+      countWrite(*ctx, serialized);
+      ctx->outbound_stream->write(std::move(serialized));
+    }
+    if (!answers_first) {
+      flushAnswers(*ctx);
+    }
+  }
+
+  void Connectivity::flushAnswers(PeerContext &ctx) const {
+    if (ctx.iwant_answers->empty()) {
+      return;
+    }
+    auto serialized = ctx.iwant_answers->serialize();
+    countWrite(ctx, serialized);
+    ctx.outbound_stream->writeAnswers(std::move(serialized),
+                                      ctx.iwant_answers_requested);
+  }
+
+  void Connectivity::countWrite(
+      PeerContext &ctx, const outcome::result<SharedBuffer> &serialized) {
+    if (ctx.diag && serialized) {
+      ++ctx.diag->view.writes_tx;
+      ctx.diag->view.bytes_tx += serialized.value()->size();
+    }
+  }
+
+  Stream::AnswerStats Connectivity::takeAnswerStats() {
+    return std::exchange(answer_stats_, Stream::AnswerStats{});
   }
 
   boost::optional<PeerContextPtr> Connectivity::knownPeer(
@@ -391,7 +419,8 @@ namespace libp2p::protocol::gossip {
                                                   on_stream_event_,
                                                   *msg_receiver_,
                                                   std::move(stream),
-                                                  ctx);
+                                                  ctx,
+                                                  &answer_stats_);
 
     gossip_stream->read();
 
@@ -442,6 +471,7 @@ namespace libp2p::protocol::gossip {
     }
 
     ctx->message_builder->reset();
+    ctx->iwant_answers->reset();
     ctx->partial_advertised = false;
     for (auto &s : ctx->inbound_streams) {
       s->close();
@@ -514,7 +544,7 @@ namespace libp2p::protocol::gossip {
 
   void Connectivity::peerIsWritable(const PeerContextPtr &ctx,
                                     bool low_latency) {
-    if (ctx->message_builder->empty()) {
+    if (ctx->message_builder->empty() && ctx->iwant_answers->empty()) {
       return;
     }
 

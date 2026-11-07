@@ -71,6 +71,9 @@ namespace libp2p::protocol::gossip {
     /// peer_diagnostics_keep_msec before \p now
     void dropDiagnostics(Time now);
 
+    /// The writes of answers to IWANTs since the last call (silkworm #227)
+    Stream::AnswerStats takeAnswerStats();
+
     /// Partial messages extension: the options our subscriptions to a topic
     /// announce to the peers we advertised the extension to, and what to do
     /// when we advertise it to a peer already connected (the subscriptions it
@@ -124,6 +127,14 @@ namespace libp2p::protocol::gossip {
     /// Flushes outgoing messages into wire for a given peer, if connected
     void flush(const PeerContextPtr &ctx) const;
 
+    /// Writes the answers to the IWANTs of \p ctx, connected, ahead of its
+    /// other messages
+    void flushAnswers(PeerContext &ctx) const;
+
+    /// Counts a write of \p serialized to \p ctx in its diagnostics
+    static void countWrite(PeerContext &ctx,
+                           const outcome::result<SharedBuffer> &serialized);
+
     const Config config_;
     std::shared_ptr<basic::Scheduler> scheduler_;
     std::shared_ptr<Host> host_;
@@ -155,6 +166,10 @@ namespace libp2p::protocol::gossip {
 
     /// Renew addresses in address repo periodically within heartbeat timer
     std::chrono::milliseconds addresses_renewal_time_{0};
+
+    /// The writes of answers to IWANTs of the outbound streams, see
+    /// takeAnswerStats
+    Stream::AnswerStats answer_stats_;
 
     /// See setPartialHooks
     PartialOptionsFn partial_options_;

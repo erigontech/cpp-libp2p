@@ -23,7 +23,8 @@ namespace libp2p::protocol::gossip {
   PeerContext::PeerContext(peer::PeerId id)
       : peer_id(std::move(id)),
         str(makeStringRepr(peer_id)),
-        message_builder(std::make_shared<MessageBuilder>()) {}
+        message_builder(std::make_shared<MessageBuilder>()),
+        iwant_answers(std::make_shared<MessageBuilder>()) {}
 
   namespace {
     uint64_t idPrefix(const MessageId &msg_id) {

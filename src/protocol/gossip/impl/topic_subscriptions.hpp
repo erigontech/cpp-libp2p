@@ -100,6 +100,10 @@ namespace libp2p::protocol::gossip {
     /// Puts \p p in backoff until \p until, or later if it already is
     void setBackoff(const PeerContextPtr &p, Time until);
 
+    /// The bytes queued to \p p take longer than Config::ihave_max_drain_msec
+    /// to drain at \p now: no IHAVE to it, counted (silkworm #227)
+    bool withholdIHave(PeerContext &p, Time now);
+
     /// \p p is in the silence backoff of a repair eviction, which the refills
     /// skip; counts the skip
     bool skipSilenced(const PeerContextPtr &p);

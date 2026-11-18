@@ -17,7 +17,6 @@
 #include <libp2p/transport/quic/stream.hpp>
 #include <libp2p/transport/tcp/tcp_util.hpp>
 #include <qtils/option_take.hpp>
-#include <cstdio>
 
 #include <openssl/x509.h>
 
@@ -121,7 +120,6 @@ namespace libp2p::transport::lsquic {
       auto conn_ctx = reinterpret_cast<ConnCtx *>(lsquic_conn_get_ctx(conn));
       auto self = conn_ctx->engine;
       auto ok = status == LSQ_HSK_OK or status == LSQ_HSK_RESUMED_OK;
-      fprintf(stderr, "[quic] handshake %s\n", ok ? "ok" : "failed");
       // Run the handshake-completion logic exactly once: on_new_conn
       // synthesizes on_hsk_done for accepted connections and lsquic may also
       // deliver the real one; a second pass would construct a second
